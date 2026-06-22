@@ -18,6 +18,10 @@
 
 [https://wechat-doc.houhoukang.com/](https://wechat-doc.houhoukang.com/)
 
+## OpenClaw AI 助理 MVP
+
+本 fork 支持第一阶段 OpenClaw AI 助理底座，默认关闭；启用方式见 [docs/openclaw-assistant-mvp.md](docs/openclaw-assistant-mvp.md)。
+
 ## 官方交流群
 
 <table>
