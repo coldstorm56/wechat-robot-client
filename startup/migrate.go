@@ -40,6 +40,7 @@ func autoMigrateTasks() []migrateTask {
 				&model.Skill{},
 				&model.SystemPrompt{},
 				&model.Contact{},
+				&model.AssistantSessionLog{},
 			},
 		},
 	}

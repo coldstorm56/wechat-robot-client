@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 
 	"wechat-robot-client/interface/settings"
+	"wechat-robot-client/model"
 	"wechat-robot-client/pkg/robotctx"
 	"wechat-robot-client/repository"
 	"wechat-robot-client/vars"
@@ -130,6 +132,7 @@ func (s *AIChatService) chatWithOpenClaw(robotCtx robotctx.RobotContext, aiMessa
 			"from_wxid":       robotCtx.FromWxID,
 			"sender_wxid":     robotCtx.SenderWxID,
 			"message_id":      robotCtx.MessageID,
+			"msg_id":          robotCtx.MsgID,
 			"is_chat_room":    strings.Contains(robotCtx.FromWxID, "@chatroom"),
 			"trigger_mode":    vars.OpenClawSettings.TriggerMode,
 			"trigger_prefix":  vars.OpenClawSettings.TriggerPrefix,
@@ -138,16 +141,80 @@ func (s *AIChatService) chatWithOpenClaw(robotCtx robotctx.RobotContext, aiMessa
 		},
 	}
 
+	sessionLog := s.createOpenClawSessionLog(robotCtx, request, len(messages))
+
 	start := time.Now()
 	result, err := NewOpenClawAdapter(*vars.OpenClawSettings).Call(s.ctx, request)
 	log.Printf("[OpenClaw] 接口调用耗时: %v", time.Since(start))
 	if err != nil {
+		s.finishOpenClawSessionLog(sessionLog, result, "", err)
 		return openai.ChatCompletionMessage{}, err
 	}
 	if result.Reply == "" {
 		result.Reply = "OpenClaw 返回了空回复，请稍后重试。"
 	}
+	s.finishOpenClawSessionLog(sessionLog, result, result.Reply, nil)
 	return openai.ChatCompletionMessage{Content: result.Reply}, nil
+}
+
+func (s *AIChatService) createOpenClawSessionLog(robotCtx robotctx.RobotContext, request OpenClawRequest, contextCount int) *model.AssistantSessionLog {
+	if vars.DB == nil {
+		return nil
+	}
+	requestPayload, err := jsonMarshalString(request)
+	if err != nil {
+		log.Printf("[OpenClaw] 序列化会话日志请求失败: %v", err)
+		requestPayload = ""
+	}
+	sessionLog := &model.AssistantSessionLog{
+		MessageID:      robotCtx.MessageID,
+		MsgID:          robotCtx.MsgID,
+		Channel:        request.Channel,
+		SessionID:      request.SessionID,
+		FromWxID:       robotCtx.FromWxID,
+		SenderWxID:     robotCtx.SenderWxID,
+		IsChatRoom:     strings.Contains(robotCtx.FromWxID, "@chatroom"),
+		TriggerType:    vars.OpenClawSettings.TriggerMode,
+		RequestText:    request.Message,
+		ContextCount:   contextCount,
+		OpenClawURL:    vars.OpenClawSettings.BaseURL,
+		RequestPayload: requestPayload,
+		Status:         model.AssistantSessionLogStatusReceived,
+	}
+	if err := repository.NewAssistantSessionLogRepo(s.ctx, vars.DB).Create(sessionLog); err != nil {
+		log.Printf("[OpenClaw] 写入会话日志失败: %v", err)
+		return nil
+	}
+	return sessionLog
+}
+
+func (s *AIChatService) finishOpenClawSessionLog(sessionLog *model.AssistantSessionLog, result *OpenClawCallResult, reply string, callErr error) {
+	if sessionLog == nil || vars.DB == nil {
+		return
+	}
+	if result != nil {
+		sessionLog.RequestPayload = result.RequestPayload
+		sessionLog.ResponsePayload = result.ResponsePayload
+		sessionLog.DurationMS = result.DurationMS
+	}
+	sessionLog.ReplyText = reply
+	if callErr != nil {
+		sessionLog.Status = model.AssistantSessionLogStatusFailed
+		sessionLog.ErrorMessage = callErr.Error()
+	} else {
+		sessionLog.Status = model.AssistantSessionLogStatusSuccess
+	}
+	if err := repository.NewAssistantSessionLogRepo(s.ctx, vars.DB).Update(sessionLog); err != nil {
+		log.Printf("[OpenClaw] 更新会话日志失败: %v", err)
+	}
+}
+
+func jsonMarshalString(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func (s *AIChatService) latestChatMessageText(messages []openai.ChatCompletionMessageParamUnion) string {

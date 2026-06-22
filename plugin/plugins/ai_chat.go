@@ -306,6 +306,7 @@ func (p *AIChatPlugin) Run(ctx *plugin.MessageContext) {
 		FromWxID:         ctx.Message.FromWxID,
 		SenderWxID:       ctx.Message.SenderWxID,
 		MessageID:        ctx.Message.ID,
+		MsgID:            ctx.Message.MsgId,
 		RefMessageID:     refMessageID,
 	}, aiMessages)
 	if err != nil {

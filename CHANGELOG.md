@@ -6,6 +6,7 @@
 
 - 阶段 1：新增 OpenClaw 助理 MVP 的运行时配置、环境变量示例和 HTTP Adapter，默认关闭以保持现有 AI 路径不变。
 - 阶段 2：OpenClaw 开启时将私聊/群聊 AI 回复路由到 OpenClaw，并接入群白名单、群聊 `TRIGGER_MODE`/`TRIGGER_PREFIX` 和按条数控制的上下文窗口。
+- 阶段 3：新增 `assistant_session_logs` 会话日志表、仓储和迁移，并记录 OpenClaw 请求、响应、回复、耗时与异常。
 
 ## [5.1.0] - 2026/05/16
 

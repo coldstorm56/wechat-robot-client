@@ -16,6 +16,7 @@ type RobotContext struct {
 	FromWxID           string
 	SenderWxID         string
 	MessageID          int64
+	MsgID              int64
 	RefMessageID       int64
 	KnowledgeBaseCodes []string
 }
@@ -35,6 +36,7 @@ func (rc RobotContext) ToEnvVars() []string {
 		"ROBOT_FROM_WX_ID=" + rc.FromWxID,
 		"ROBOT_SENDER_WX_ID=" + rc.SenderWxID,
 		fmt.Sprintf("ROBOT_MESSAGE_ID=%d", rc.MessageID),
+		fmt.Sprintf("ROBOT_MSG_ID=%d", rc.MsgID),
 		fmt.Sprintf("ROBOT_REF_MESSAGE_ID=%d", rc.RefMessageID),
 	}
 }
