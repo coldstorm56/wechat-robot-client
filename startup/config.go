@@ -117,4 +117,60 @@ func loadEnvConfig() {
 	if vars.SkillsDir == "" {
 		vars.SkillsDir = DefaultSkillsDir
 	}
+
+	loadOpenClawConfig()
+}
+
+func loadOpenClawConfig() {
+	vars.OpenClawSettings.Enabled = getEnvBool("OPENCLAW_ENABLED", false)
+	vars.OpenClawSettings.BaseURL = strings.TrimSpace(os.Getenv("OPENCLAW_BASE_URL"))
+	vars.OpenClawSettings.APIKey = os.Getenv("OPENCLAW_API_KEY")
+	vars.OpenClawSettings.Timeout = time.Duration(getEnvInt("OPENCLAW_TIMEOUT", 30)) * time.Second
+	vars.OpenClawSettings.BotName = getEnvString("BOT_NAME", "助手")
+	vars.OpenClawSettings.TriggerMode = getEnvString("TRIGGER_MODE", "at_or_prefix")
+	vars.OpenClawSettings.TriggerPrefix = getEnvString("TRIGGER_PREFIX", "助手：")
+	vars.OpenClawSettings.EnableContext = getEnvBool("ENABLE_CONTEXT", true)
+	vars.OpenClawSettings.ContextWindow = getEnvInt("CONTEXT_WINDOW", 10)
+	vars.OpenClawSettings.MaxReplyLength = getEnvInt("MAX_REPLY_LENGTH", 1200)
+
+	if vars.OpenClawSettings.Timeout <= 0 {
+		vars.OpenClawSettings.Timeout = 30 * time.Second
+	}
+	if vars.OpenClawSettings.ContextWindow < 1 {
+		vars.OpenClawSettings.ContextWindow = 1
+	}
+}
+
+func getEnvString(key, defaultValue string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		log.Printf("%s 转换失败，使用默认值 %v: %v", key, defaultValue, err)
+		return defaultValue
+	}
+	return parsed
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("%s 转换失败，使用默认值 %d: %v", key, defaultValue, err)
+		return defaultValue
+	}
+	return parsed
 }
