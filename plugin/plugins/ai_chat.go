@@ -275,6 +275,9 @@ func (p *AIChatPlugin) Run(ctx *plugin.MessageContext) {
 	}
 
 	aiTriggerWord := ctx.Settings.GetAITriggerWord()
+	if vars.OpenClawSettings.Enabled {
+		aiTriggerWord = vars.OpenClawSettings.TriggerPrefix
+	}
 	aiMessages, err := ctx.MessageService.GetAIMessageContext(ctx.Message)
 	if err != nil {
 		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, err.Error())

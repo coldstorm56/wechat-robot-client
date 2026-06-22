@@ -29,6 +29,10 @@ func NewAIChatService(ctx context.Context, config settings.Settings) *AIChatServ
 }
 
 func (s *AIChatService) Chat(robotCtx robotctx.RobotContext, aiMessages []openai.ChatCompletionMessageParamUnion) (openai.ChatCompletionMessage, error) {
+	if vars.OpenClawSettings.Enabled {
+		return s.chatWithOpenClaw(robotCtx, aiMessages)
+	}
+
 	// 获取 AI 配置
 	aiConfig := s.config.GetAIConfig()
 
@@ -85,6 +89,67 @@ func (s *AIChatService) Chat(robotCtx robotctx.RobotContext, aiMessages []openai
 	return reply, err
 }
 
+func (s *AIChatService) chatWithOpenClaw(robotCtx robotctx.RobotContext, aiMessages []openai.ChatCompletionMessageParamUnion) (openai.ChatCompletionMessage, error) {
+	currentMessage := s.latestChatMessageText(aiMessages)
+	if currentMessage == "" {
+		currentMessage = "在吗？"
+	}
+
+	sessionID := "friend:" + robotCtx.FromWxID
+	channel := "wechat_personal"
+	if strings.Contains(robotCtx.FromWxID, "@chatroom") {
+		sessionID = "group:" + robotCtx.FromWxID + ":" + robotCtx.SenderWxID
+		channel = "wechat_group"
+	}
+
+	messages := make([]OpenClawMessage, 0, len(aiMessages))
+	for _, msg := range aiMessages {
+		content := strings.TrimSpace(s.chatMessageParamText(msg))
+		if content == "" {
+			continue
+		}
+		messages = append(messages, OpenClawMessage{
+			Role:      s.chatMessageParamRole(msg),
+			Content:   content,
+			SenderID:  robotCtx.SenderWxID,
+			CreatedAt: time.Now().Unix(),
+		})
+	}
+
+	request := OpenClawRequest{
+		Channel:        channel,
+		SessionID:      sessionID,
+		ConversationID: sessionID,
+		BotName:        vars.OpenClawSettings.BotName,
+		Message:        currentMessage,
+		Messages:       messages,
+		Metadata: map[string]any{
+			"robot_id":        robotCtx.RobotID,
+			"robot_code":      robotCtx.RobotCode,
+			"robot_wxid":      robotCtx.RobotWxID,
+			"from_wxid":       robotCtx.FromWxID,
+			"sender_wxid":     robotCtx.SenderWxID,
+			"message_id":      robotCtx.MessageID,
+			"is_chat_room":    strings.Contains(robotCtx.FromWxID, "@chatroom"),
+			"trigger_mode":    vars.OpenClawSettings.TriggerMode,
+			"trigger_prefix":  vars.OpenClawSettings.TriggerPrefix,
+			"context_enabled": vars.OpenClawSettings.EnableContext,
+			"context_window":  vars.OpenClawSettings.ContextWindow,
+		},
+	}
+
+	start := time.Now()
+	result, err := NewOpenClawAdapter(*vars.OpenClawSettings).Call(s.ctx, request)
+	log.Printf("[OpenClaw] 接口调用耗时: %v", time.Since(start))
+	if err != nil {
+		return openai.ChatCompletionMessage{}, err
+	}
+	if result.Reply == "" {
+		result.Reply = "OpenClaw 返回了空回复，请稍后重试。"
+	}
+	return openai.ChatCompletionMessage{Content: result.Reply}, nil
+}
+
 func (s *AIChatService) latestChatMessageText(messages []openai.ChatCompletionMessageParamUnion) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		text := s.chatMessageParamText(messages[i])
@@ -123,6 +188,17 @@ func (s *AIChatService) chatMessageParamText(message openai.ChatCompletionMessag
 		return builder.String()
 	default:
 		return ""
+	}
+}
+
+func (s *AIChatService) chatMessageParamRole(message openai.ChatCompletionMessageParamUnion) string {
+	switch {
+	case message.OfAssistant != nil:
+		return "assistant"
+	case message.OfSystem != nil || message.OfDeveloper != nil:
+		return "system"
+	default:
+		return "user"
 	}
 }
 
