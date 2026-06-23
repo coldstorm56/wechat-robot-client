@@ -408,6 +408,22 @@ By default, `PollStart` uses `prime_on_start=true`: the first immediate check re
 
 If the poll loop is allowed to inject (`inject` omitted or `true`), `PollStart` validates `WECHAT_UI_ASSISTANT_SYNC_URL` or request `callback_url` before starting and rejects non-loopback or empty callbacks. For observe-only loops, pass `{"inject":false}`; no callback is required.
 
+WeChat UI acceptance runner:
+
+```powershell
+.\scripts\wechat_ui_acceptance.ps1
+```
+
+The default runner compiles the Python smoke/harness scripts, runs `go test ./cmd/wechat-ui-bridge -count=1`, runs the assistant-flow harness self-test, and reads the real WeChat UI status without sending a message. Use this after small bridge changes or before attempting a real send. If the status output contains `blocking_windows`, handle that local dialog manually before real WeChat acceptance.
+
+For the full local main-service path without touching real WeChat, run:
+
+```powershell
+.\scripts\wechat_ui_acceptance.ps1 -RunMainE2E -SkipRealUiStatus
+```
+
+This starts temporary main-service instances on `9002` and verifies private chat, send-failure logging, group `@bot`, group `助手：` prefix, and non-whitelisted group suppression through local mock OpenClaw and mock WeChat endpoints. It uses reversible local DB patches and should end with zero remaining test session logs, group members, chatroom settings, or messages for the acceptance inputs.
+
 Assistant-flow local E2E harness:
 
 ```powershell

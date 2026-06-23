@@ -40,6 +40,7 @@
 - Runtime validation: let the assistant-flow E2E harness simulate WeChat UI bridge send failures and assert that the main-service log contains the expected bridge error text.
 - Runtime validation: add a local assistant-flow E2E harness with mock OpenClaw and mock WeChat bridge endpoints to verify the 9001 `sync-message` to `/Msg/SendTxt` path before real WeChat UI acceptance.
 - Runtime validation: let the assistant-flow E2E harness start an isolated temporary main service and report callback/preflight diagnostics when active robot wxid or AI enablement prerequisites are not satisfied.
+- Runtime validation: add a PowerShell WeChat UI acceptance runner that aggregates bridge tests, harness self-test, read-only real UI status, and optional full mock main-service E2E coverage.
 - Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.
 - Runtime validation: pass the local temporary-main-service assistant-flow E2E check from `sync-message` through mock OpenClaw to mock `/Msg/SendTxt` with reversible local DB preparation.
 - Runtime safety: tighten WeChat UI send verification so a successful send must also match the current conversation's last readable message.

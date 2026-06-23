@@ -283,6 +283,12 @@ class LocalDBPatch:
             f"WHERE from_wxid={sql_string(self.args.from_wxid)} "
             f"AND to_wxid={sql_string(self.args.wechat_id)} "
             f"AND content={sql_string(self.args.reply)};",
+            f"DELETE FROM {quote_ident(self.args.robot_db)}.messages "
+            f"WHERE from_wxid={sql_string(self.args.from_wxid)} "
+            f"AND content LIKE {sql_string('%' + self.args.reply + '%')};",
+            f"DELETE FROM {quote_ident(self.args.robot_db)}.messages "
+            f"WHERE from_wxid={sql_string(self.args.from_wxid)} "
+            f"AND content LIKE {sql_string('%' + expected_request_text + '%')};",
             f"DELETE FROM {quote_ident(self.args.robot_db)}.contacts "
             f"WHERE wechat_id={sql_string(self.args.from_wxid)};",
         ]
