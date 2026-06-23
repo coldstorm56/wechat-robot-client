@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"wechat-robot-client/model"
@@ -38,6 +39,7 @@ type bridgeConfig struct {
 	OperatorPauseWindows string
 	OperatorPauseFile    string
 	AssistantSyncURL     string
+	InjectDedupeTTL      time.Duration
 }
 
 type clientResponse struct {
@@ -74,6 +76,8 @@ type injectCurrentLastTextRequest struct {
 	Contact     string `json:"contact"`
 	Content     string `json:"content"`
 	PushContent string `json:"push_content"`
+	DedupeKey   string `json:"dedupe_key"`
+	SkipDedupe  bool   `json:"skip_dedupe"`
 }
 
 type scriptOutput struct {
@@ -107,6 +111,8 @@ type operatorPauseRequest struct {
 	Minutes    int    `json:"minutes"`
 	Windows    string `json:"windows"`
 }
+
+var injectedMessages = newDedupeStore()
 
 func main() {
 	cfg := loadConfig()
@@ -154,6 +160,7 @@ func loadConfig() bridgeConfig {
 	pauseWindows := flag.String("operator-pause-windows", envString("WECHAT_UI_OPERATOR_PAUSE_WINDOWS", ""), "daily operator takeover windows, e.g. 09:00-12:00,18:30-20:00")
 	pauseFile := flag.String("operator-pause-file", envString("WECHAT_UI_OPERATOR_PAUSE_FILE", filepath.Join(os.TempDir(), "wechat-ui-operator-pause.json")), "optional local file for dynamic operator takeover pauses")
 	assistantSyncURL := flag.String("assistant-sync-url", envString("WECHAT_UI_ASSISTANT_SYNC_URL", ""), "optional loopback main-service sync-message callback URL")
+	injectDedupeSeconds := flag.Int("inject-dedupe-seconds", envInt("WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS", 120), "suppress duplicate injected visible messages for this many seconds")
 	flag.Parse()
 
 	return bridgeConfig{
@@ -171,6 +178,7 @@ func loadConfig() bridgeConfig {
 		OperatorPauseWindows: strings.TrimSpace(*pauseWindows),
 		OperatorPauseFile:    strings.TrimSpace(*pauseFile),
 		AssistantSyncURL:     strings.TrimSpace(*assistantSyncURL),
+		InjectDedupeTTL:      time.Duration(*injectDedupeSeconds) * time.Second,
 	}
 }
 
@@ -191,6 +199,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"operator_pause_file":    cfg.OperatorPauseFile,
 			"operator_pause_windows": cfg.OperatorPauseWindows,
 			"assistant_sync_url":     cfg.AssistantSyncURL,
+			"inject_dedupe_seconds":  int(cfg.InjectDedupeTTL.Seconds()),
 		})
 	}
 }
@@ -469,9 +478,18 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeClientError(w, http.StatusBadGateway, "current visible last text is empty")
 			return
 		}
-		payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, req.PushContent, time.Now())
+		now := time.Now()
+		dedupeKey := firstNonEmpty(req.DedupeKey, buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content))
+		if !req.SkipDedupe && cfg.InjectDedupeTTL > 0 && !injectedMessages.TryReserve(dedupeKey, now, cfg.InjectDedupeTTL) {
+			writeDuplicateInjection(w, dedupeKey, cfg.InjectDedupeTTL)
+			return
+		}
+		payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, req.PushContent, now)
 		result, err := postSyncMessage(r.Context(), cfg, callbackURL, payload)
 		if err != nil {
+			if !req.SkipDedupe && cfg.InjectDedupeTTL > 0 {
+				injectedMessages.Forget(dedupeKey)
+			}
 			writeClientError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -482,6 +500,7 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			"to_wxid":      toWxID,
 			"content":      content,
 			"msg_id":       msgID,
+			"dedupe_key":   dedupeKey,
 			"contact":      contact,
 			"status_code":  result.statusCode,
 			"response":     result.body,
@@ -514,6 +533,60 @@ func readCurrentLastText(ctx context.Context, cfg bridgeConfig, req readLastRequ
 type syncPostResult struct {
 	statusCode int
 	body       string
+}
+
+type dedupeStore struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func newDedupeStore() *dedupeStore {
+	return &dedupeStore{seen: map[string]time.Time{}}
+}
+
+func (s *dedupeStore) TryReserve(key string, now time.Time, ttl time.Duration) bool {
+	if key == "" || ttl <= 0 {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for seenKey, expiresAt := range s.seen {
+		if !expiresAt.After(now) {
+			delete(s.seen, seenKey)
+		}
+	}
+	if expiresAt, ok := s.seen[key]; ok && expiresAt.After(now) {
+		return false
+	}
+	s.seen[key] = now.Add(ttl)
+	return true
+}
+
+func (s *dedupeStore) Forget(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.seen, key)
+}
+
+func buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content string) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(wechatID)),
+		strings.ToLower(strings.TrimSpace(fromWxID)),
+		strings.ToLower(strings.TrimSpace(toWxID)),
+		strings.TrimSpace(content),
+	}, "\x00")
+}
+
+func writeDuplicateInjection(w http.ResponseWriter, dedupeKey string, ttl time.Duration) {
+	writeJSON(w, http.StatusConflict, clientResponse{
+		Success: false,
+		Code:    -3,
+		Message: "duplicate visible text injection suppressed",
+		Data: map[string]any{
+			"dedupe_key":     dedupeKey,
+			"dedupe_seconds": int(ttl.Seconds()),
+		},
+	})
 }
 
 func postSyncMessage(parent context.Context, cfg bridgeConfig, callbackURL string, payload clientResponse) (syncPostResult, error) {

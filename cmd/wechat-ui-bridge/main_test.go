@@ -232,3 +232,54 @@ func TestInjectCurrentLastTextHandlerPostsProvidedContent(t *testing.T) {
 		t.Fatal(callbackErr)
 	}
 }
+
+func TestDedupeStoreReserveAndForget(t *testing.T) {
+	store := newDedupeStore()
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	if !store.TryReserve("k", now, time.Minute) {
+		t.Fatal("first reserve should pass")
+	}
+	if store.TryReserve("k", now.Add(30*time.Second), time.Minute) {
+		t.Fatal("duplicate reserve should be suppressed")
+	}
+	if !store.TryReserve("k", now.Add(61*time.Second), time.Minute) {
+		t.Fatal("expired reserve should pass")
+	}
+	store.Forget("k")
+	if !store.TryReserve("k", now.Add(62*time.Second), time.Minute) {
+		t.Fatal("forgotten key should pass")
+	}
+}
+
+func TestInjectCurrentLastTextHandlerSuppressesDuplicate(t *testing.T) {
+	oldStore := injectedMessages
+	injectedMessages = newDedupeStore()
+	defer func() { injectedMessages = oldStore }()
+
+	callbackCount := 0
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackCount++
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+		InjectDedupeTTL:  time.Minute,
+	}
+	body := `{"from_wxid":"filehelper","content":"visible hello"}`
+	for i, wantStatus := range []int{http.StatusOK, http.StatusConflict} {
+		req := httptest.NewRequest(http.MethodPost, "/api/Operator/InjectCurrentLastText", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		injectCurrentLastTextHandler(cfg)(resp, req)
+		if resp.Code != wantStatus {
+			t.Fatalf("request %d status=%d body=%s", i+1, resp.Code, resp.Body.String())
+		}
+	}
+	if callbackCount != 1 {
+		t.Fatalf("callbackCount=%d", callbackCount)
+	}
+}

@@ -204,6 +204,7 @@ $env:WECHAT_UI_EXPECT_CHAT_TITLE='文件传输助手'
 $env:WECHAT_UI_OPERATOR_PAUSE_WINDOWS='12:00-13:30,19:00-22:00'
 $env:WECHAT_UI_OPERATOR_PAUSE_FILE="$env:TEMP\wechat-ui-operator-pause.json"
 $env:WECHAT_UI_ASSISTANT_SYNC_URL='http://127.0.0.1:9001/api/v1/wechat-client/wechat_ui_bot/sync-message'
+$env:WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS='120'
 go run ./cmd/wechat-ui-bridge
 ```
 
@@ -306,6 +307,8 @@ Invoke-RestMethod -Method Post `
 ```
 
 When `content` is omitted, `InjectCurrentLastText` first runs the local `read-last` OCR check against the current visible WeChat conversation and then posts the resulting text to `WECHAT_UI_ASSISTANT_SYNC_URL` or the request `callback_url`. The callback URL is restricted to loopback hosts (`127.0.0.1`, `localhost`, or `::1`). This is a manual bridge into the existing `/api/v1/wechat-client/:wechatID/sync-message` assistant flow; it is not continuous polling.
+
+Manual injection has a local in-memory duplicate guard. By default, the same `wechat_id`/`from_wxid`/`to_wxid`/`content` is suppressed for 120 seconds and returns HTTP 409 instead of forwarding the same visible text twice. Use `WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS=0` to disable this guard for debugging, or pass an explicit `dedupe_key`/`skip_dedupe` in the request when a controlled test requires it.
 
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 
