@@ -120,11 +120,24 @@ type syncMessageBuildOptions struct {
 }
 
 type scriptOutput struct {
-	OK             bool   `json:"ok"`
-	Error          string `json:"error"`
-	LastText       string `json:"last_text"`
-	DeliveryStatus string `json:"delivery_status"`
-	Status         any    `json:"status"`
+	OK              bool   `json:"ok"`
+	Error           string `json:"error"`
+	ErrorCode       string `json:"error_code"`
+	LastText        string `json:"last_text"`
+	DeliveryStatus  string `json:"delivery_status"`
+	Status          any    `json:"status"`
+	BlockingWindows any    `json:"blocking_windows"`
+}
+
+type uiScriptError struct {
+	output scriptOutput
+}
+
+func (e *uiScriptError) Error() string {
+	if e.output.Error != "" {
+		return e.output.Error
+	}
+	return "unknown UI automation failure"
 }
 
 type pauseState struct {
@@ -328,7 +341,7 @@ func uiStatusHandler(cfg bridgeConfig) http.HandlerFunc {
 		}
 		status, err := readNormalizedUIStatus(r.Context(), cfg)
 		if err != nil {
-			writeClientError(w, http.StatusBadGateway, err.Error())
+			writeScriptClientError(w, http.StatusBadGateway, err)
 			return
 		}
 		writeClientOK(w, status)
@@ -467,7 +480,7 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			}
 			output, err := runScript(r.Context(), cfg, args...)
 			if err != nil {
-				writeClientError(w, http.StatusBadGateway, err.Error())
+				writeScriptClientError(w, http.StatusBadGateway, err)
 				return
 			}
 			deliveryStatus = output.DeliveryStatus
@@ -515,7 +528,7 @@ func readLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		}
 		last, contact, err := readVisibleText(r.Context(), cfg, req)
 		if err != nil {
-			writeClientError(w, http.StatusBadGateway, err.Error())
+			writeScriptClientError(w, http.StatusBadGateway, err)
 			return
 		}
 		writeClientOK(w, map[string]any{
@@ -560,7 +573,7 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 				ToWxID:  fromWxID,
 			})
 			if err != nil {
-				writeClientError(w, http.StatusBadGateway, err.Error())
+				writeScriptClientError(w, http.StatusBadGateway, err)
 				return
 			}
 			if contact != "" && strings.TrimSpace(req.FromWxID) == "" {
@@ -620,7 +633,7 @@ func pollCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		}
 		result, status, err := pollCurrentLastText(r.Context(), cfg, req)
 		if err != nil {
-			writeClientError(w, status, err.Error())
+			writeScriptClientError(w, status, err)
 			return
 		}
 		if status == http.StatusConflict {
@@ -762,7 +775,7 @@ func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
 		if req.RequireUIUsable != nil && *req.RequireUIUsable {
 			status, err := readNormalizedUIStatus(r.Context(), cfg)
 			if err != nil {
-				writeClientError(w, http.StatusBadGateway, err.Error())
+				writeScriptClientError(w, http.StatusBadGateway, err)
 				return
 			}
 			if usable, ok := status["usable"].(bool); ok && !usable {
@@ -1284,7 +1297,7 @@ func runScript(parent context.Context, cfg bridgeConfig, args ...string) (script
 		if parsed.Error == "" {
 			parsed.Error = "unknown UI automation failure"
 		}
-		return parsed, errors.New(parsed.Error)
+		return parsed, &uiScriptError{output: parsed}
 	}
 	return parsed, nil
 }
@@ -1638,6 +1651,23 @@ func writeClientError(w http.ResponseWriter, status int, message string) {
 		Message: message,
 		Data:    map[string]any{},
 	})
+}
+
+func writeScriptClientError(w http.ResponseWriter, fallbackStatus int, err error) {
+	var scriptErr *uiScriptError
+	if errors.As(err, &scriptErr) && scriptErr.output.ErrorCode == "blocking_window" {
+		writeJSON(w, http.StatusConflict, clientResponse{
+			Success: false,
+			Code:    -5,
+			Message: scriptErr.Error(),
+			Data: map[string]any{
+				"error_code":       scriptErr.output.ErrorCode,
+				"blocking_windows": scriptErr.output.BlockingWindows,
+			},
+		})
+		return
+	}
+	writeClientError(w, fallbackStatus, err.Error())
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

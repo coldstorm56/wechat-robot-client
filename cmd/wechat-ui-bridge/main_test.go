@@ -134,6 +134,42 @@ func TestUiStatusHandlerNormalizesScriptOutput(t *testing.T) {
 	}
 }
 
+func TestSendTextHandlerReturnsStructuredBlockingWindowError(t *testing.T) {
+	cfg := bridgeConfig{
+		BotWxID:       "wechat_ui_bot",
+		Python:        writeUIStatusHelperCommand(t, blockingWindowErrorPayload()),
+		Script:        "ignored-script-arg",
+		Timeout:       time.Second,
+		SendCurrent:   true,
+		RequireVerify: true,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Msg/SendTxt", strings.NewReader(`{"ToWxid":"filehelper","Content":"hello"}`))
+	resp := httptest.NewRecorder()
+
+	sendTextHandler(cfg)(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var body clientResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Success || body.Code != -5 {
+		t.Fatalf("body=%#v", body)
+	}
+	data, ok := body.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data=%#v", body.Data)
+	}
+	if data["error_code"] != "blocking_window" {
+		t.Fatalf("Data=%#v", data)
+	}
+	if blockers, ok := data["blocking_windows"].([]any); !ok || len(blockers) != 1 {
+		t.Fatalf("blocking_windows=%#v", data["blocking_windows"])
+	}
+}
+
 func TestReadinessHandlerSkipsUIStatusDuringPause(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pause.json")
 	if err := os.WriteFile(path, []byte(`{"paused":true,"reason":"manual takeover"}`), 0o600); err != nil {
@@ -225,6 +261,10 @@ func blockedUIStatusPayload() string {
 
 func usableUIStatusPayload() string {
 	return `{"ok":true,"status":{"foreground":true,"title_match":true,"blocking_windows":[]}}`
+}
+
+func blockingWindowErrorPayload() string {
+	return `{"ok":false,"error":"WeChat window is blocked by another dialog","error_code":"blocking_window","blocking_windows":[{"name":"Windows Security Alert","class_name":"#32770"}]}`
 }
 
 func writeUIStatusHelperCommand(t *testing.T, payload string) string {

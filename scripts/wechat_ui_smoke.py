@@ -66,6 +66,13 @@ class UIStatus:
     foreground: bool
 
 
+class BlockingWindowError(RuntimeError):
+    def __init__(self, blockers: list[WindowInfo]):
+        self.blockers = blockers
+        blocker_text = "; ".join(f"{item.name} [{item.class_name}] {item.rect}" for item in blockers[:3])
+        super().__init__(f"WeChat window is blocked by another dialog; close it before UI automation: {blocker_text}")
+
+
 def configure_logging() -> None:
     log_path = os.environ.get(
         "WECHAT_UI_LOG_PATH",
@@ -345,8 +352,7 @@ def is_known_blocking_dialog(title: str, class_name: str) -> bool:
 def ensure_no_blocking_windows(ctrl: auto.Control) -> None:
     blockers = blocking_window_infos(ctrl)
     if blockers:
-        blocker_text = "; ".join(f"{item.name} [{item.class_name}] {item.rect}" for item in blockers[:3])
-        raise RuntimeError(f"WeChat window is blocked by another dialog; close it before UI automation: {blocker_text}")
+        raise BlockingWindowError(blockers)
 
 
 def screenshot_rect(ctrl: auto.Control) -> tuple[int, int, int, int]:
@@ -765,6 +771,17 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return args.func(args)
+    except BlockingWindowError as exc:
+        logging.exception("wechat ui automation blocked")
+        json_print(
+            {
+                "ok": False,
+                "error": str(exc),
+                "error_code": "blocking_window",
+                "blocking_windows": [asdict(window) for window in exc.blockers],
+            }
+        )
+        return 1
     except Exception as exc:
         logging.exception("wechat ui automation failed")
         json_print({"ok": False, "error": str(exc)})

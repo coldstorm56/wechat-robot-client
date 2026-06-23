@@ -285,6 +285,8 @@ Use `UiStatus` as the explicit operator/runtime preflight before enabling a poll
 
 `Readiness` is the combined runtime preflight endpoint. It returns the current operator pause state, poll loop status, and, when not paused, the normalized `UiStatus`. If an operator pause is active, it returns `ready=false` with `reason=operator_pause` without touching the WeChat window.
 
+When send/read automation is attempted while a known blocking window covers WeChat, the smoke script returns `error_code=blocking_window`; the bridge maps that to HTTP `409` and preserves `blocking_windows` in the response data.
+
 Dry-run the bridge without touching the WeChat UI:
 
 ```powershell
