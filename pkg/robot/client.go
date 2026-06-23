@@ -449,9 +449,22 @@ func (c *Client) SendTextMessage(req SendTextMessageRequest) (newMessages SendTe
 		return
 	}
 	var result ClientResponse[SendTextMessageResponse]
-	_, err = c.client.R().
+	resp, err := c.client.R().
 		SetResult(&result).
 		SetBody(req).Post(fmt.Sprintf("%s%s", c.Domain.BasePath(), MsgSendTxt))
+	if err != nil {
+		return SendTextMessageResponse{}, err
+	}
+	if resp != nil && resp.IsError() {
+		if result.Message != "" {
+			return SendTextMessageResponse{}, errors.New(result.Message)
+		}
+		body := strings.TrimSpace(resp.String())
+		if body != "" {
+			return SendTextMessageResponse{}, fmt.Errorf("微信文本消息发送失败，HTTP %d: %s", resp.StatusCode(), body)
+		}
+		return SendTextMessageResponse{}, fmt.Errorf("微信文本消息发送失败，HTTP %d", resp.StatusCode())
+	}
 	if err = result.CheckError(err); err != nil {
 		return
 	}
