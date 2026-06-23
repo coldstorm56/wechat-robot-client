@@ -5,6 +5,7 @@
 - Runtime check: add a local WeChat 4.x UI automation smoke script for window detection, explicit text send, and last visible text reads without public protocol endpoints.
 - Runtime docs: document the WCFerry/classic-WeChat blocker and the new local-only WeChat 4.x UI automation route with clipboard/window restoration safety notes.
 - Protocol bridge: add a loopback-only WeChat UI compatibility bridge with health, profile/contact stubs, explicit text sending, and visible last-text reads.
+- Runtime check: require visible UI delivery verification before reporting a WeChat UI send as successful; best-effort keyboard submission is now explicit and not accepted as delivery evidence.
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.

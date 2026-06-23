@@ -30,6 +30,7 @@ type bridgeConfig struct {
 	Timeout        time.Duration
 	DryRun         bool
 	SendCurrent    bool
+	RequireVerify  bool
 }
 
 type clientResponse struct {
@@ -59,9 +60,10 @@ type readLastRequest struct {
 }
 
 type scriptOutput struct {
-	OK       bool   `json:"ok"`
-	Error    string `json:"error"`
-	LastText string `json:"last_text"`
+	OK             bool   `json:"ok"`
+	Error          string `json:"error"`
+	LastText       string `json:"last_text"`
+	DeliveryStatus string `json:"delivery_status"`
 }
 
 func main() {
@@ -100,6 +102,7 @@ func loadConfig() bridgeConfig {
 	timeoutSeconds := flag.Int("timeout", envInt("WECHAT_UI_TIMEOUT", 12), "script timeout seconds")
 	dryRun := flag.Bool("dry-run", envBool("WECHAT_UI_DRY_RUN", false), "return protocol-shaped success without touching WeChat UI")
 	sendCurrent := flag.Bool("send-current", envBool("WECHAT_UI_SEND_CURRENT_CHAT", true), "send to the currently open WeChat conversation instead of navigating by contact")
+	requireVerify := flag.Bool("require-verify", envBool("WECHAT_UI_SEND_REQUIRE_VERIFY", true), "require visible message verification before reporting send success")
 	flag.Parse()
 
 	return bridgeConfig{
@@ -112,6 +115,7 @@ func loadConfig() bridgeConfig {
 		Timeout:        time.Duration(*timeoutSeconds) * time.Second,
 		DryRun:         *dryRun,
 		SendCurrent:    *sendCurrent,
+		RequireVerify:  *requireVerify,
 	}
 }
 
@@ -124,6 +128,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"bot_wxid":          cfg.BotWxID,
 			"dry_run":           cfg.DryRun,
 			"send_current_chat": cfg.SendCurrent,
+			"require_verify":    cfg.RequireVerify,
 		})
 	}
 }
@@ -208,13 +213,23 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		}
 
 		contact := contactName(cfg, req.ToWxID)
+		deliveryStatus := "dry_run"
 		if !cfg.DryRun {
 			args := []string{"send", "--message", req.Content}
 			if !cfg.SendCurrent {
 				args = append(args, "--contact", contact)
 			}
-			if _, err := runScript(r.Context(), cfg, args...); err != nil {
+			if !cfg.RequireVerify {
+				args = append(args, "--no-verify")
+			}
+			output, err := runScript(r.Context(), cfg, args...)
+			if err != nil {
 				writeClientError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			deliveryStatus = output.DeliveryStatus
+			if cfg.RequireVerify && deliveryStatus != "visible_verified" {
+				writeClientError(w, http.StatusBadGateway, "visible delivery was not verified")
 				return
 			}
 		}
@@ -234,8 +249,9 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 					"NewMsgId":    now,
 				},
 			},
-			"Count":  1,
-			"NoKnow": 0,
+			"Count":          1,
+			"NoKnow":         0,
+			"DeliveryStatus": deliveryStatus,
 		})
 	}
 }

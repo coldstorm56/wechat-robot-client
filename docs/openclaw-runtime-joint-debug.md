@@ -150,11 +150,19 @@ If WeChat is not already running, explicitly allow the script to start the local
 python .\scripts\wechat_ui_smoke.py --launch inspect
 ```
 
-Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first:
+Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first. The command returns `ok=true` only after the submitted text is visible again in the WeChat UI; if visible delivery cannot be verified, treat the send as unproven even if the keyboard sequence ran.
 
 ```powershell
 python .\scripts\wechat_ui_smoke.py send `
   --message 'wechat-ui-automation smoke test'
+```
+
+Best-effort send without visible verification is available only for local debugging and must not be used as acceptance evidence:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py send `
+  --message 'wechat-ui-automation smoke test' `
+  --no-verify
 ```
 
 Read the last visible text from the current conversation, or from a named conversation after opening it:
@@ -180,6 +188,7 @@ $env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
 $env:WECHAT_UI_BOT_NAME='此刻正佳'
 $env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
 $env:WECHAT_UI_SEND_CURRENT_CHAT='true'
+$env:WECHAT_UI_SEND_REQUIRE_VERIFY='true'
 go run ./cmd/wechat-ui-bridge
 ```
 
@@ -201,6 +210,8 @@ $env:WECHAT_UI_DRY_RUN='true'
 go run ./cmd/wechat-ui-bridge
 ```
 
+If an operator intentionally wants best-effort UI submission without visible delivery verification, set `WECHAT_UI_SEND_REQUIRE_VERIFY=false`; do not use that mode for acceptance.
+
 Bridge smoke checks:
 
 ```powershell
@@ -218,4 +229,4 @@ Point the main service at this bridge only after the explicit send/read smoke ch
 $env:WECHAT_SERVER_HOST='127.0.0.1:3021'
 ```
 
-Current bridge boundary: this first bridge wraps explicit text sending to the currently open conversation and best-effort visible last-text reads. On the current Windows WeChat 4.x client, UI Automation can send to File Transfer Assistant when that conversation is already open, but contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path. Visible message-body reads may still return time labels or fail when WeChat hides the Chromium message subtree behind the Qt/MMUI shell. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.
+Current bridge boundary: this first bridge wraps explicit text submission to the currently open conversation and best-effort visible last-text reads. A keyboard submission is not accepted as real delivery unless the same text becomes visible in the WeChat UI. On the current Windows WeChat 4.x client, contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path. Visible message-body reads may still return time labels or fail when WeChat hides the Chromium message subtree behind the Qt/MMUI shell. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.

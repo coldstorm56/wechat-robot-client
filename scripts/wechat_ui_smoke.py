@@ -232,7 +232,22 @@ def send_text(ctrl: auto.Control, contact: str, message: str) -> None:
     paste_text(message)
     time.sleep(0.2)
     auto.SendKeys("{Enter}", waitTime=0.05)
-    logging.info("sent text via UI automation contact=%r length=%d", contact or "<current>", len(message))
+    logging.info("submitted text via UI automation contact=%r length=%d", contact or "<current>", len(message))
+
+
+def verify_visible_message(ctrl: auto.Control, expected: str, timeout: float) -> str:
+    deadline = time.time() + timeout
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            text = read_last_text(ctrl, None)
+            if expected in text:
+                return text
+            last_error = f"last visible text did not contain submitted message: {text!r}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(f"message submission attempted but visible delivery was not verified: {last_error}")
 
 
 def collect_texts(ctrl: auto.Control, limit: int = 80) -> list[str]:
@@ -320,7 +335,18 @@ def cmd_send(args: argparse.Namespace) -> int:
     with preserved_desktop_state(restore_window=not args.keep_focus):
         window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
         send_text(window, args.contact, args.message)
-    json_print({"ok": True, "contact": args.contact, "sent": args.message})
+        verified_text = ""
+        if args.verify:
+            verified_text = verify_visible_message(window, args.message, args.verify_timeout)
+    json_print(
+        {
+            "ok": True,
+            "contact": args.contact,
+            "submitted": args.message,
+            "delivery_status": "visible_verified" if args.verify else "submitted_unverified",
+            "verified_text": verified_text,
+        }
+    )
     return 0
 
 
@@ -346,6 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
     send = sub.add_parser("send", help="send a text message through the WeChat UI")
     send.add_argument("--contact", default=None, help="experimental: navigate by contact name before sending")
     send.add_argument("--message", required=True)
+    send.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="require the submitted text to become visible before returning ok")
+    send.add_argument("--verify-timeout", type=float, default=5)
     send.set_defaults(func=cmd_send)
 
     read_last = sub.add_parser("read-last", help="read the last visible text from a conversation")
