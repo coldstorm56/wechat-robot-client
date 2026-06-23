@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -281,5 +282,96 @@ func TestInjectCurrentLastTextHandlerSuppressesDuplicate(t *testing.T) {
 	}
 	if callbackCount != 1 {
 		t.Fatalf("callbackCount=%d", callbackCount)
+	}
+}
+
+func TestPollCurrentLastTextHandlerInjectsOnlyWhenChanged(t *testing.T) {
+	oldInjected := injectedMessages
+	oldPolled := polledMessages
+	oldReader := readVisibleText
+	injectedMessages = newDedupeStore()
+	polledMessages = newLastTextStore()
+	visibleText := "visible one"
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return visibleText, "", nil
+	}
+	defer func() {
+		injectedMessages = oldInjected
+		polledMessages = oldPolled
+		readVisibleText = oldReader
+	}()
+
+	callbackCount := 0
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackCount++
+		var payload robot.ClientResponse[robot.SyncMessage]
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if got := *payload.Data.AddMsgs[0].Content.String; got != visibleText {
+			http.Error(w, fmt.Sprintf("content=%q", got), http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+		InjectDedupeTTL:  time.Minute,
+	}
+	for i, wantChanged := range []bool{true, false} {
+		req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollCurrentLastText", strings.NewReader(`{}`))
+		resp := httptest.NewRecorder()
+		pollCurrentLastTextHandler(cfg)(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d body=%s", i+1, resp.Code, resp.Body.String())
+		}
+		var body clientResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		data := body.Data.(map[string]any)
+		if data["changed"] != wantChanged {
+			t.Fatalf("request %d changed=%v want %v", i+1, data["changed"], wantChanged)
+		}
+	}
+	if callbackCount != 1 {
+		t.Fatalf("callbackCount=%d", callbackCount)
+	}
+
+	visibleText = "visible two"
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollCurrentLastText", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+	pollCurrentLastTextHandler(cfg)(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("changed text status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if callbackCount != 2 {
+		t.Fatalf("callbackCount after change=%d", callbackCount)
+	}
+}
+
+func TestPollCurrentLastTextHandlerCanObserveWithoutInjecting(t *testing.T) {
+	oldPolled := polledMessages
+	oldReader := readVisibleText
+	polledMessages = newLastTextStore()
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "observe only", "", nil
+	}
+	defer func() {
+		polledMessages = oldPolled
+		readVisibleText = oldReader
+	}()
+
+	cfg := bridgeConfig{BotWxID: "wechat_ui_bot", Timeout: time.Second}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollCurrentLastText", strings.NewReader(`{"inject":false}`))
+	resp := httptest.NewRecorder()
+	pollCurrentLastTextHandler(cfg)(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
 }

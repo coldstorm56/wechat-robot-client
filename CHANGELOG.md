@@ -16,6 +16,7 @@
 - Runtime safety: add local operator pause set/clear endpoints so a human takeover window can be applied without restarting the WeChat UI bridge.
 - Protocol bridge: add a manual current-last-text injection endpoint that forwards visible WeChat text into the existing main-service `sync-message` assistant flow through a loopback-only callback.
 - Runtime safety: add an in-memory duplicate guard for manual WeChat UI text injection so the same visible message is not forwarded repeatedly by accident.
+- Protocol bridge: add a single-step current-last-text poll endpoint that injects only when the visible text changed, preparing for safer low-frequency polling.
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.

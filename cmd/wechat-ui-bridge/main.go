@@ -80,6 +80,15 @@ type injectCurrentLastTextRequest struct {
 	SkipDedupe  bool   `json:"skip_dedupe"`
 }
 
+type pollCurrentLastTextRequest struct {
+	CallbackURL string `json:"callback_url"`
+	WechatID    string `json:"wechat_id"`
+	FromWxID    string `json:"from_wxid"`
+	ToWxID      string `json:"to_wxid"`
+	Contact     string `json:"contact"`
+	Inject      *bool  `json:"inject"`
+}
+
 type scriptOutput struct {
 	OK             bool   `json:"ok"`
 	Error          string `json:"error"`
@@ -112,7 +121,11 @@ type operatorPauseRequest struct {
 	Windows    string `json:"windows"`
 }
 
-var injectedMessages = newDedupeStore()
+var (
+	injectedMessages = newDedupeStore()
+	polledMessages   = newLastTextStore()
+	readVisibleText  = readCurrentLastText
+)
 
 func main() {
 	cfg := loadConfig()
@@ -132,6 +145,7 @@ func main() {
 	mux.HandleFunc("/api/Operator/PauseClear", pauseClearHandler(cfg))
 	mux.HandleFunc("/api/Operator/UiStatus", uiStatusHandler(cfg))
 	mux.HandleFunc("/api/Operator/InjectCurrentLastText", injectCurrentLastTextHandler(cfg))
+	mux.HandleFunc("/api/Operator/PollCurrentLastText", pollCurrentLastTextHandler(cfg))
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -420,7 +434,7 @@ func readLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
 			return
 		}
-		last, contact, err := readCurrentLastText(r.Context(), cfg, req)
+		last, contact, err := readVisibleText(r.Context(), cfg, req)
 		if err != nil {
 			writeClientError(w, http.StatusBadGateway, err.Error())
 			return
@@ -461,7 +475,7 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		contact := strings.TrimSpace(req.Contact)
 		if content == "" {
 			var err error
-			content, contact, err = readCurrentLastText(r.Context(), cfg, readLastRequest{
+			content, contact, err = readVisibleText(r.Context(), cfg, readLastRequest{
 				Contact: req.Contact,
 				ToWxID:  fromWxID,
 			})
@@ -508,6 +522,113 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 	}
 }
 
+func pollCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !allowAutomationNow(w, cfg) {
+			return
+		}
+		var req pollCurrentLastTextRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
+			return
+		}
+		wechatID := firstNonEmpty(req.WechatID, cfg.BotWxID)
+		toWxID := firstNonEmpty(req.ToWxID, cfg.BotWxID)
+		fromWxID := firstNonEmpty(req.FromWxID, req.Contact, "filehelper")
+		content, contact, err := readVisibleText(r.Context(), cfg, readLastRequest{
+			Contact: req.Contact,
+			ToWxID:  fromWxID,
+		})
+		if err != nil {
+			writeClientError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		content = strings.TrimSpace(content)
+		if content == "" {
+			writeClientError(w, http.StatusBadGateway, "current visible last text is empty")
+			return
+		}
+		if contact != "" && strings.TrimSpace(req.FromWxID) == "" {
+			fromWxID = contact
+		}
+		streamKey := buildPollStreamKey(wechatID, fromWxID, toWxID)
+		if !polledMessages.Changed(streamKey, content) {
+			writeClientOK(w, map[string]any{
+				"changed":    false,
+				"injected":   false,
+				"wechat_id":  wechatID,
+				"from_wxid":  fromWxID,
+				"to_wxid":    toWxID,
+				"content":    content,
+				"stream_key": streamKey,
+				"contact":    contact,
+			})
+			return
+		}
+		shouldInject := true
+		if req.Inject != nil {
+			shouldInject = *req.Inject
+		}
+		if !shouldInject {
+			polledMessages.Remember(streamKey, content)
+			writeClientOK(w, map[string]any{
+				"changed":    true,
+				"injected":   false,
+				"wechat_id":  wechatID,
+				"from_wxid":  fromWxID,
+				"to_wxid":    toWxID,
+				"content":    content,
+				"stream_key": streamKey,
+				"contact":    contact,
+			})
+			return
+		}
+		callbackURL := firstNonEmpty(req.CallbackURL, cfg.AssistantSyncURL)
+		if callbackURL == "" {
+			writeClientError(w, http.StatusBadRequest, "callback_url or WECHAT_UI_ASSISTANT_SYNC_URL is required")
+			return
+		}
+		if err := ensureLoopbackURL(callbackURL); err != nil {
+			writeClientError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		now := time.Now()
+		dedupeKey := buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content)
+		if cfg.InjectDedupeTTL > 0 && !injectedMessages.TryReserve(dedupeKey, now, cfg.InjectDedupeTTL) {
+			writeDuplicateInjection(w, dedupeKey, cfg.InjectDedupeTTL)
+			return
+		}
+		payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, "", now)
+		result, err := postSyncMessage(r.Context(), cfg, callbackURL, payload)
+		if err != nil {
+			if cfg.InjectDedupeTTL > 0 {
+				injectedMessages.Forget(dedupeKey)
+			}
+			writeClientError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		polledMessages.Remember(streamKey, content)
+		writeClientOK(w, map[string]any{
+			"changed":      true,
+			"injected":     true,
+			"callback_url": callbackURL,
+			"wechat_id":    wechatID,
+			"from_wxid":    fromWxID,
+			"to_wxid":      toWxID,
+			"content":      content,
+			"msg_id":       msgID,
+			"dedupe_key":   dedupeKey,
+			"stream_key":   streamKey,
+			"contact":      contact,
+			"status_code":  result.statusCode,
+			"response":     result.body,
+		})
+	}
+}
+
 func readCurrentLastText(ctx context.Context, cfg bridgeConfig, req readLastRequest) (string, string, error) {
 	contact := ""
 	if !cfg.SendCurrent {
@@ -540,8 +661,17 @@ type dedupeStore struct {
 	seen map[string]time.Time
 }
 
+type lastTextStore struct {
+	mu     sync.Mutex
+	values map[string]string
+}
+
 func newDedupeStore() *dedupeStore {
 	return &dedupeStore{seen: map[string]time.Time{}}
+}
+
+func newLastTextStore() *lastTextStore {
+	return &lastTextStore{values: map[string]string{}}
 }
 
 func (s *dedupeStore) TryReserve(key string, now time.Time, ttl time.Duration) bool {
@@ -566,6 +696,26 @@ func (s *dedupeStore) Forget(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.seen, key)
+}
+
+func (s *lastTextStore) Changed(key, value string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.values[key] != value
+}
+
+func (s *lastTextStore) Remember(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values[key] = value
+}
+
+func buildPollStreamKey(wechatID, fromWxID, toWxID string) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(wechatID)),
+		strings.ToLower(strings.TrimSpace(fromWxID)),
+		strings.ToLower(strings.TrimSpace(toWxID)),
+	}, "\x00")
 }
 
 func buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content string) string {
