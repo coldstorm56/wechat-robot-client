@@ -379,6 +379,21 @@ def verify_visible_message(ctrl: auto.Control, expected: str, timeout: float) ->
     raise RuntimeError(f"message submission attempted but visible delivery was not verified: {last_error}")
 
 
+def verify_last_visible_message(ctrl: auto.Control, expected: str, expected_title: str | None, timeout: float) -> str:
+    deadline = time.time() + timeout
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            last_text = read_last_text(ctrl, "", expected_title)
+            if contains_normalized(last_text, expected):
+                return last_text
+            last_error = f"last visible message did not match submitted text: {last_text!r}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(f"message submission attempted but last visible message was not verified: {last_error}")
+
+
 def normalize_for_match(text: str) -> str:
     return re.sub(r"[\W_]+", "", text, flags=re.UNICODE).lower()
 
@@ -601,8 +616,11 @@ def cmd_send(args: argparse.Namespace) -> int:
             args.editor_verify_timeout,
         )
         verified_text = ""
+        last_text = ""
         if args.verify:
             verified_text = verify_visible_message(window, args.message, args.verify_timeout)
+            if args.verify_last:
+                last_text = verify_last_visible_message(window, args.message, args.expect_title, args.verify_timeout)
     json_print(
         {
             "ok": True,
@@ -612,6 +630,8 @@ def cmd_send(args: argparse.Namespace) -> int:
             "draft_text": draft_text,
             "delivery_status": "visible_verified" if args.verify else "submitted_unverified",
             "verified_text": verified_text,
+            "last_text": last_text,
+            "last_text_status": "last_visible_verified" if args.verify and args.verify_last else "not_checked",
         }
     )
     return 0
@@ -646,6 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--message", required=True)
     send.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="require the submitted text to become visible before returning ok")
     send.add_argument("--verify-timeout", type=float, default=5)
+    send.add_argument("--verify-last", action=argparse.BooleanOptionalAction, default=True, help="require the current conversation's last readable message to match before returning ok")
     send.add_argument("--verify-editor", action=argparse.BooleanOptionalAction, default=True, help="require the draft to be visible in the message editor before pressing Enter")
     send.add_argument("--editor-verify-timeout", type=float, default=3)
     send.set_defaults(func=cmd_send)
