@@ -180,8 +180,9 @@ OCR notes:
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
 - If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
 - If a send attempt reports `ok=true`, verify `last_text_status=last_visible_verified` and inspect `last_text`; this is stricter than merely seeing the submitted text somewhere in the chat area.
-- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden. Resizing is safe as long as the current chat title, message area, and editor remain visible.
+- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden. Resizing is safe as long as the current chat title, message area, and editor remain visible. Before enabling polling, choose a comfortable stable size; the bridge does not require a fixed pixel size, but it will fail closed when the resized window no longer exposes enough readable UI.
 - For current-chat mode, set an expected visible chat title such as `文件传输助手`; the bridge will fail before touching the editor when WeChat is on a different surface such as Service Accounts, Contacts, or search results.
+- If `status` returns `blocking_windows`, a known system dialog or other blocking window is covering WeChat. Close or handle that dialog manually first; the bridge should not click through security prompts or report OCR/send success while the WeChat surface is blocked.
 
 Safety notes:
 
@@ -189,7 +190,7 @@ Safety notes:
 - It only focuses WeChat during explicit `send` or `read-last` commands.
 - It restores the previous clipboard text and foreground window by default.
 - Failures are logged to `%TEMP%\wechat-ui-automation-bridge.log` unless `WECHAT_UI_LOG_PATH` overrides it.
-- The bridge supports operator takeover pauses. During a pause, send/read endpoints return `operator pause active` and do not touch the WeChat window.
+- The bridge supports operator takeover pauses. During a pause, send/read endpoints return `operator pause active` and do not touch the WeChat window. Use this for daily manual handoff windows or any temporary period where the operator wants full control of the desktop.
 - For daily-use safety, send actions should remain explicit until the bridge has a tested trigger, whitelist, and pause control.
 
 Start the local compatibility bridge:
@@ -211,7 +212,7 @@ $env:WECHAT_UI_POLL_MAX_ERRORS='3'
 go run ./cmd/wechat-ui-bridge
 ```
 
-Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`.
+Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`. These windows are the default "operator takes over" schedule: during that time the bridge may keep running, but polling skips work and send/read operations fail closed without focusing WeChat.
 
 For an immediate temporary human takeover without restarting the bridge, prefer the local loopback API:
 

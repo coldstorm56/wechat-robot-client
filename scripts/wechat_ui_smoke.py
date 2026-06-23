@@ -62,6 +62,7 @@ class UIStatus:
     title_text: str
     title_match: bool | None
     chat_text_sample: list[str]
+    blocking_windows: list[WindowInfo]
     foreground: bool
 
 
@@ -283,6 +284,71 @@ def window_rect(ctrl: auto.Control) -> tuple[int, int, int, int]:
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+def rect_area(rect: tuple[int, int, int, int]) -> int:
+    left, top, right, bottom = rect
+    return max(0, right - left) * max(0, bottom - top)
+
+
+def rect_overlap(
+    a: tuple[int, int, int, int],
+    b: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    return max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+
+
+def blocking_window_infos(ctrl: auto.Control) -> list[WindowInfo]:
+    target_hwnd = int(ctrl.NativeWindowHandle or 0)
+    target_rect = window_rect(ctrl)
+    blockers: list[WindowInfo] = []
+
+    def callback(hwnd: int, _extra: object) -> bool:
+        if hwnd == target_hwnd:
+            return True
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            return True
+        title = (win32gui.GetWindowText(hwnd) or "").strip()
+        class_name = (win32gui.GetClassName(hwnd) or "").strip()
+        if not is_known_blocking_dialog(title, class_name):
+            return True
+        rect = win32gui.GetWindowRect(hwnd)
+        if rect_area(rect_overlap(target_rect, rect)) < 10000:
+            return True
+        _, process_id = win32process.GetWindowThreadProcessId(hwnd)
+        blockers.append(
+            WindowInfo(
+                hwnd=int(hwnd),
+                name=title,
+                class_name=class_name,
+                process_id=int(process_id or 0),
+                rect=f"{rect[0]},{rect[1]},{rect[2]},{rect[3]}",
+            )
+        )
+        return True
+
+    win32gui.EnumWindows(callback, None)
+    return blockers
+
+
+def is_known_blocking_dialog(title: str, class_name: str) -> bool:
+    normalized = title.lower()
+    return (
+        class_name == "#32770"
+        and (
+            "windows 安全中心警报" in normalized
+            or "windows security alert" in normalized
+            or "defender" in normalized
+            or "防火墙" in title
+        )
+    )
+
+
+def ensure_no_blocking_windows(ctrl: auto.Control) -> None:
+    blockers = blocking_window_infos(ctrl)
+    if blockers:
+        blocker_text = "; ".join(f"{item.name} [{item.class_name}] {item.rect}" for item in blockers[:3])
+        raise RuntimeError(f"WeChat window is blocked by another dialog; close it before UI automation: {blocker_text}")
+
+
 def screenshot_rect(ctrl: auto.Control) -> tuple[int, int, int, int]:
     rect = ctrl.BoundingRectangle
     left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
@@ -412,6 +478,16 @@ def verify_conversation_title(ctrl: auto.Control, expected: str) -> str:
 
 def read_ui_status(ctrl: auto.Control, expected_title: str | None) -> UIStatus:
     activate(ctrl)
+    blockers = blocking_window_infos(ctrl)
+    if blockers:
+        return UIStatus(
+            window=describe_window(ctrl),
+            title_text="",
+            title_match=False if expected_title else None,
+            chat_text_sample=[],
+            blocking_windows=blockers,
+            foreground=False,
+        )
     title_texts = ocr_title_texts(ctrl)
     title_text = "\n".join(title_texts)
     title_match = None
@@ -426,6 +502,7 @@ def read_ui_status(ctrl: auto.Control, expected_title: str | None) -> UIStatus:
         title_text=title_text,
         title_match=title_match,
         chat_text_sample=chat_texts,
+        blocking_windows=[],
         foreground=bool(hwnd and win32gui.GetForegroundWindow() == hwnd),
     )
 
@@ -456,6 +533,7 @@ def ocr_window_texts(ctrl: auto.Control) -> list[str]:
 
 
 def ocr_title_texts(ctrl: auto.Control) -> list[str]:
+    ensure_no_blocking_windows(ctrl)
     hwnd = int(ctrl.NativeWindowHandle or 0)
     if hwnd and win32gui.GetForegroundWindow() != hwnd:
         raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered title area")
@@ -473,6 +551,7 @@ def ocr_title_texts(ctrl: auto.Control) -> list[str]:
 
 
 def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
+    ensure_no_blocking_windows(ctrl)
     hwnd = int(ctrl.NativeWindowHandle or 0)
     if hwnd and win32gui.GetForegroundWindow() != hwnd:
         raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered chat area")
@@ -490,6 +569,7 @@ def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
 
 
 def ocr_editor_texts(ctrl: auto.Control) -> list[str]:
+    ensure_no_blocking_windows(ctrl)
     hwnd = int(ctrl.NativeWindowHandle or 0)
     if hwnd and win32gui.GetForegroundWindow() != hwnd:
         raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered editor area")
