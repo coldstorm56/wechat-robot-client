@@ -200,6 +200,7 @@ class LocalDBPatch:
             ).strip()
 
         if self.args.from_wxid.endswith("@chatroom"):
+            chat_room_ai_value = 1 if self.args.enable_chat_room_ai else 0
             chat_room_sql = (
                 "SELECT id, IF(chat_ai_enabled IS NULL, 'NULL', CAST(chat_ai_enabled AS CHAR)) "
                 f"FROM {quote_ident(self.args.robot_db)}.chat_room_settings "
@@ -210,13 +211,13 @@ class LocalDBPatch:
             if self.chat_room_row:
                 self.mysql(
                     f"UPDATE {quote_ident(self.args.robot_db)}.chat_room_settings "
-                    f"SET chat_ai_enabled=1 WHERE id={int(self.chat_room_row[0])};"
+                    f"SET chat_ai_enabled={chat_room_ai_value} WHERE id={int(self.chat_room_row[0])};"
                 )
             else:
                 self.mysql(
                     f"INSERT INTO {quote_ident(self.args.robot_db)}.chat_room_settings "
                     "(chat_room_id, chat_ai_enabled, wxhb_notify_member_list) "
-                    f"VALUES ({sql_string(self.args.from_wxid)}, 1, '');"
+                    f"VALUES ({sql_string(self.args.from_wxid)}, {chat_room_ai_value}, '');"
                 )
                 self.inserted_chat_room_id = self.mysql(
                     f"SELECT id FROM {quote_ident(self.args.robot_db)}.chat_room_settings "
@@ -259,7 +260,8 @@ class LocalDBPatch:
                     "robot_id": self.args.robot_id,
                     "wechat_id": self.args.wechat_id,
                     "global_chat_ai_enabled": True,
-                    "chat_room_ai_enabled": self.args.from_wxid.endswith("@chatroom"),
+                    "chat_room_ai_enabled": self.args.from_wxid.endswith("@chatroom")
+                    and self.args.enable_chat_room_ai,
                 },
                 ensure_ascii=False,
             ),
@@ -696,10 +698,24 @@ def run_smoke(args: argparse.Namespace, recorder: Recorder, main_url: str) -> in
         "sent_message": sent,
         "openclaw_request_count": len(recorder.openclaw_requests),
         "expected_reply": args.reply,
+        "expect_no_send": args.expect_no_send,
         "mock_wechat_send_error": args.mock_wechat_send_error,
         "main_preflight": preflight,
     }
+    if args.expect_no_send:
+        result["ok"] = bool(status < 300 and sent is None and len(recorder.openclaw_requests) == 0)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.expect_no_send:
+        if sent is not None:
+            print(f"Expected no /api/Msg/SendTxt call, but observed: {sent}", file=sys.stderr)
+            return 1
+        if recorder.openclaw_requests:
+            print("Expected no OpenClaw request, but one or more requests were observed.", file=sys.stderr)
+            return 1
+        if status >= 300:
+            print(f"Callback returned unexpected HTTP status {status}: {body}", file=sys.stderr)
+            return 1
+        return 0
     if not sent:
         print(
             "No /api/Msg/SendTxt call was observed. Check that the main service was started "
@@ -739,6 +755,17 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="when --prepare-local-db is active, verify assistant_session_logs before cleanup",
+    )
+    parser.add_argument(
+        "--enable-chat-room-ai",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="when preparing a chatroom, temporarily enable its chat_ai_enabled whitelist flag",
+    )
+    parser.add_argument(
+        "--expect-no-send",
+        action="store_true",
+        help="pass only when no OpenClaw call and no mock /api/Msg/SendTxt call are observed",
     )
     parser.add_argument("--mysql-container", default="wechat-admin-mysql")
     parser.add_argument("--mysql-user", default="root")
@@ -841,7 +868,7 @@ def main() -> int:
             )
             if not found:
                 return 1
-        if exit_code == 0 and args.verify_session_log and db_patch is not None:
+        if exit_code == 0 and args.verify_session_log and db_patch is not None and not args.expect_no_send:
             db_patch.verify_session_log()
         return exit_code
     finally:
