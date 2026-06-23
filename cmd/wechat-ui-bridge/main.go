@@ -89,6 +89,16 @@ type pollCurrentLastTextRequest struct {
 	Inject      *bool  `json:"inject"`
 }
 
+type pollLoopStartRequest struct {
+	CallbackURL     string `json:"callback_url"`
+	WechatID        string `json:"wechat_id"`
+	FromWxID        string `json:"from_wxid"`
+	ToWxID          string `json:"to_wxid"`
+	Contact         string `json:"contact"`
+	Inject          *bool  `json:"inject"`
+	IntervalSeconds int    `json:"interval_seconds"`
+}
+
 type scriptOutput struct {
 	OK             bool   `json:"ok"`
 	Error          string `json:"error"`
@@ -125,6 +135,7 @@ var (
 	injectedMessages = newDedupeStore()
 	polledMessages   = newLastTextStore()
 	readVisibleText  = readCurrentLastText
+	backgroundPoller = newPollRunner()
 )
 
 func main() {
@@ -146,6 +157,9 @@ func main() {
 	mux.HandleFunc("/api/Operator/UiStatus", uiStatusHandler(cfg))
 	mux.HandleFunc("/api/Operator/InjectCurrentLastText", injectCurrentLastTextHandler(cfg))
 	mux.HandleFunc("/api/Operator/PollCurrentLastText", pollCurrentLastTextHandler(cfg))
+	mux.HandleFunc("/api/Operator/PollStart", pollStartHandler(cfg, backgroundPoller))
+	mux.HandleFunc("/api/Operator/PollStop", pollStopHandler(backgroundPoller))
+	mux.HandleFunc("/api/Operator/PollStatus", pollStatusHandler(backgroundPoller))
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -214,6 +228,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"operator_pause_windows": cfg.OperatorPauseWindows,
 			"assistant_sync_url":     cfg.AssistantSyncURL,
 			"inject_dedupe_seconds":  int(cfg.InjectDedupeTTL.Seconds()),
+			"poll_loop":              backgroundPoller.Status(),
 		})
 	}
 }
@@ -535,97 +550,148 @@ func pollCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
 			return
 		}
-		wechatID := firstNonEmpty(req.WechatID, cfg.BotWxID)
-		toWxID := firstNonEmpty(req.ToWxID, cfg.BotWxID)
-		fromWxID := firstNonEmpty(req.FromWxID, req.Contact, "filehelper")
-		content, contact, err := readVisibleText(r.Context(), cfg, readLastRequest{
-			Contact: req.Contact,
-			ToWxID:  fromWxID,
-		})
+		result, status, err := pollCurrentLastText(r.Context(), cfg, req)
 		if err != nil {
-			writeClientError(w, http.StatusBadGateway, err.Error())
+			writeClientError(w, status, err.Error())
 			return
 		}
-		content = strings.TrimSpace(content)
-		if content == "" {
-			writeClientError(w, http.StatusBadGateway, "current visible last text is empty")
-			return
-		}
-		if contact != "" && strings.TrimSpace(req.FromWxID) == "" {
-			fromWxID = contact
-		}
-		streamKey := buildPollStreamKey(wechatID, fromWxID, toWxID)
-		if !polledMessages.Changed(streamKey, content) {
-			writeClientOK(w, map[string]any{
-				"changed":    false,
-				"injected":   false,
-				"wechat_id":  wechatID,
-				"from_wxid":  fromWxID,
-				"to_wxid":    toWxID,
-				"content":    content,
-				"stream_key": streamKey,
-				"contact":    contact,
+		if status == http.StatusConflict {
+			writeJSON(w, status, clientResponse{
+				Success: false,
+				Code:    -3,
+				Message: "duplicate visible text injection suppressed",
+				Data:    result,
 			})
 			return
 		}
-		shouldInject := true
-		if req.Inject != nil {
-			shouldInject = *req.Inject
-		}
-		if !shouldInject {
-			polledMessages.Remember(streamKey, content)
-			writeClientOK(w, map[string]any{
-				"changed":    true,
-				"injected":   false,
-				"wechat_id":  wechatID,
-				"from_wxid":  fromWxID,
-				"to_wxid":    toWxID,
-				"content":    content,
-				"stream_key": streamKey,
-				"contact":    contact,
-			})
-			return
-		}
-		callbackURL := firstNonEmpty(req.CallbackURL, cfg.AssistantSyncURL)
-		if callbackURL == "" {
-			writeClientError(w, http.StatusBadRequest, "callback_url or WECHAT_UI_ASSISTANT_SYNC_URL is required")
-			return
-		}
-		if err := ensureLoopbackURL(callbackURL); err != nil {
-			writeClientError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		now := time.Now()
-		dedupeKey := buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content)
-		if cfg.InjectDedupeTTL > 0 && !injectedMessages.TryReserve(dedupeKey, now, cfg.InjectDedupeTTL) {
-			writeDuplicateInjection(w, dedupeKey, cfg.InjectDedupeTTL)
-			return
-		}
-		payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, "", now)
-		result, err := postSyncMessage(r.Context(), cfg, callbackURL, payload)
-		if err != nil {
-			if cfg.InjectDedupeTTL > 0 {
-				injectedMessages.Forget(dedupeKey)
-			}
-			writeClientError(w, http.StatusBadGateway, err.Error())
-			return
-		}
+		writeClientOK(w, result)
+	}
+}
+
+func pollCurrentLastText(ctx context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest) (map[string]any, int, error) {
+	result := map[string]any{}
+	status := http.StatusOK
+
+	wechatID := firstNonEmpty(req.WechatID, cfg.BotWxID)
+	toWxID := firstNonEmpty(req.ToWxID, cfg.BotWxID)
+	fromWxID := firstNonEmpty(req.FromWxID, req.Contact, "filehelper")
+	content, contact, err := readVisibleText(ctx, cfg, readLastRequest{
+		Contact: req.Contact,
+		ToWxID:  fromWxID,
+	})
+	if err != nil {
+		return result, http.StatusBadGateway, err
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return result, http.StatusBadGateway, errors.New("current visible last text is empty")
+	}
+	if contact != "" && strings.TrimSpace(req.FromWxID) == "" {
+		fromWxID = contact
+	}
+	streamKey := buildPollStreamKey(wechatID, fromWxID, toWxID)
+	base := map[string]any{
+		"wechat_id":  wechatID,
+		"from_wxid":  fromWxID,
+		"to_wxid":    toWxID,
+		"content":    content,
+		"stream_key": streamKey,
+		"contact":    contact,
+	}
+	if !polledMessages.Changed(streamKey, content) {
+		base["changed"] = false
+		base["injected"] = false
+		return base, status, nil
+	}
+	shouldInject := true
+	if req.Inject != nil {
+		shouldInject = *req.Inject
+	}
+	if !shouldInject {
 		polledMessages.Remember(streamKey, content)
-		writeClientOK(w, map[string]any{
-			"changed":      true,
-			"injected":     true,
-			"callback_url": callbackURL,
-			"wechat_id":    wechatID,
-			"from_wxid":    fromWxID,
-			"to_wxid":      toWxID,
-			"content":      content,
-			"msg_id":       msgID,
-			"dedupe_key":   dedupeKey,
-			"stream_key":   streamKey,
-			"contact":      contact,
-			"status_code":  result.statusCode,
-			"response":     result.body,
-		})
+		base["changed"] = true
+		base["injected"] = false
+		return base, status, nil
+	}
+	callbackURL := firstNonEmpty(req.CallbackURL, cfg.AssistantSyncURL)
+	if callbackURL == "" {
+		return result, http.StatusBadRequest, errors.New("callback_url or WECHAT_UI_ASSISTANT_SYNC_URL is required")
+	}
+	if err := ensureLoopbackURL(callbackURL); err != nil {
+		return result, http.StatusBadRequest, err
+	}
+	now := time.Now()
+	dedupeKey := buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content)
+	if cfg.InjectDedupeTTL > 0 && !injectedMessages.TryReserve(dedupeKey, now, cfg.InjectDedupeTTL) {
+		base["changed"] = true
+		base["injected"] = false
+		base["duplicate"] = true
+		base["dedupe_key"] = dedupeKey
+		base["dedupe_seconds"] = int(cfg.InjectDedupeTTL.Seconds())
+		return base, http.StatusConflict, nil
+	}
+	payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, "", now)
+	postResult, err := postSyncMessage(ctx, cfg, callbackURL, payload)
+	if err != nil {
+		if cfg.InjectDedupeTTL > 0 {
+			injectedMessages.Forget(dedupeKey)
+		}
+		return result, http.StatusBadGateway, err
+	}
+	polledMessages.Remember(streamKey, content)
+	base["changed"] = true
+	base["injected"] = true
+	base["callback_url"] = callbackURL
+	base["msg_id"] = msgID
+	base["dedupe_key"] = dedupeKey
+	base["status_code"] = postResult.statusCode
+	base["response"] = postResult.body
+	return base, status, nil
+}
+
+func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req pollLoopStartRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
+			return
+		}
+		interval := normalizePollInterval(req.IntervalSeconds)
+		pollReq := pollCurrentLastTextRequest{
+			CallbackURL: req.CallbackURL,
+			WechatID:    req.WechatID,
+			FromWxID:    req.FromWxID,
+			ToWxID:      req.ToWxID,
+			Contact:     req.Contact,
+			Inject:      req.Inject,
+		}
+		if err := runner.Start(cfg, pollReq, interval); err != nil {
+			writeClientError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeClientOK(w, runner.Status())
+	}
+}
+
+func pollStopHandler(runner *pollRunner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		runner.Stop()
+		writeClientOK(w, runner.Status())
+	}
+}
+
+func pollStatusHandler(runner *pollRunner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		writeClientOK(w, runner.Status())
 	}
 }
 
@@ -666,12 +732,125 @@ type lastTextStore struct {
 	values map[string]string
 }
 
+type pollRunner struct {
+	mu        sync.Mutex
+	cancel    context.CancelFunc
+	running   bool
+	interval  time.Duration
+	request   pollCurrentLastTextRequest
+	lastRun   string
+	lastError string
+	lastState map[string]any
+	runCount  int
+}
+
 func newDedupeStore() *dedupeStore {
 	return &dedupeStore{seen: map[string]time.Time{}}
 }
 
 func newLastTextStore() *lastTextStore {
 	return &lastTextStore{values: map[string]string{}}
+}
+
+func newPollRunner() *pollRunner {
+	return &pollRunner{}
+}
+
+func normalizePollInterval(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 60 * time.Second
+	}
+	interval := time.Duration(seconds) * time.Second
+	if interval < 30*time.Second {
+		return 30 * time.Second
+	}
+	return interval
+}
+
+func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.running {
+		return errors.New("poll loop already running")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	p.running = true
+	p.interval = interval
+	p.request = req
+	p.lastError = ""
+	p.lastState = nil
+	go p.loop(ctx, cfg, req, interval)
+	return nil
+}
+
+func (p *pollRunner) Stop() {
+	p.mu.Lock()
+	cancel := p.cancel
+	p.cancel = nil
+	p.running = false
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (p *pollRunner) Status() map[string]any {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return map[string]any{
+		"running":          p.running,
+		"interval_seconds": int(p.interval.Seconds()),
+		"request":          p.request,
+		"last_run":         p.lastRun,
+		"last_error":       p.lastError,
+		"last_state":       p.lastState,
+		"run_count":        p.runCount,
+	}
+}
+
+func (p *pollRunner) loop(ctx context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration) {
+	p.runOnce(ctx, cfg, req)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.runOnce(ctx, cfg, req)
+		}
+	}
+}
+
+func (p *pollRunner) runOnce(parent context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest) {
+	now := time.Now()
+	if state := currentPauseState(cfg, now); state.Paused {
+		p.recordPollResult(now, map[string]any{
+			"skipped": true,
+			"reason":  "operator pause active",
+			"pause":   state,
+		}, "")
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, cfg.Timeout+2*time.Second)
+	defer cancel()
+	result, status, err := pollCurrentLastText(ctx, cfg, req)
+	if err != nil {
+		p.recordPollResult(now, map[string]any{"status_code": status}, err.Error())
+		return
+	}
+	result["status_code"] = status
+	p.recordPollResult(now, result, "")
+}
+
+func (p *pollRunner) recordPollResult(now time.Time, state map[string]any, err string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastRun = now.Format(time.RFC3339)
+	p.lastState = state
+	p.lastError = err
+	p.runCount++
 }
 
 func (s *dedupeStore) TryReserve(key string, now time.Time, ttl time.Duration) bool {

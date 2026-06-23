@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -374,4 +375,109 @@ func TestPollCurrentLastTextHandlerCanObserveWithoutInjecting(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
 	}
+}
+
+func TestNormalizePollInterval(t *testing.T) {
+	for seconds, want := range map[int]time.Duration{
+		0:  60 * time.Second,
+		1:  30 * time.Second,
+		30: 30 * time.Second,
+		90: 90 * time.Second,
+	} {
+		if got := normalizePollInterval(seconds); got != want {
+			t.Fatalf("normalizePollInterval(%d)=%v, want %v", seconds, got, want)
+		}
+	}
+}
+
+func TestPollRunnerStartStopRunsImmediately(t *testing.T) {
+	oldInjected := injectedMessages
+	oldPolled := polledMessages
+	oldReader := readVisibleText
+	injectedMessages = newDedupeStore()
+	polledMessages = newLastTextStore()
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "loop visible", "", nil
+	}
+	defer func() {
+		injectedMessages = oldInjected
+		polledMessages = oldPolled
+		readVisibleText = oldReader
+	}()
+
+	var callbackCount int32
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&callbackCount, 1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	runner := newPollRunner()
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+		InjectDedupeTTL:  time.Minute,
+	}
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1)); err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Stop()
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1)); err == nil {
+		t.Fatal("expected duplicate start to fail")
+	}
+	waitFor(t, time.Second, func() bool {
+		return atomic.LoadInt32(&callbackCount) == 1 && runner.Status()["run_count"].(int) >= 1
+	})
+	runner.Stop()
+	if runner.Status()["running"].(bool) {
+		t.Fatal("runner should be stopped")
+	}
+}
+
+func TestPollRunnerSkipsDuringPause(t *testing.T) {
+	oldReader := readVisibleText
+	var readCount int32
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		atomic.AddInt32(&readCount, 1)
+		return "should not read", "", nil
+	}
+	defer func() { readVisibleText = oldReader }()
+
+	path := filepath.Join(t.TempDir(), "pause.json")
+	if err := os.WriteFile(path, []byte(`{"paused":true,"reason":"test handoff"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := newPollRunner()
+	cfg := bridgeConfig{
+		BotWxID:           "wechat_ui_bot",
+		Timeout:           time.Second,
+		OperatorPauseFile: path,
+	}
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1)); err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Stop()
+	waitFor(t, time.Second, func() bool {
+		return runner.Status()["run_count"].(int) >= 1
+	})
+	if got := atomic.LoadInt32(&readCount); got != 0 {
+		t.Fatalf("readCount=%d", got)
+	}
+	state := runner.Status()["last_state"].(map[string]any)
+	if state["skipped"] != true {
+		t.Fatalf("last_state=%#v", state)
+	}
+}
+
+func waitFor(t *testing.T, timeout time.Duration, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
