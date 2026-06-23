@@ -503,11 +503,11 @@ func TestPollRunnerStartStopRunsImmediately(t *testing.T) {
 		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
 		InjectDedupeTTL:  time.Minute,
 	}
-	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1)); err != nil {
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), false); err != nil {
 		t.Fatal(err)
 	}
 	defer runner.Stop()
-	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1)); err == nil {
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), false); err == nil {
 		t.Fatal("expected duplicate start to fail")
 	}
 	waitFor(t, time.Second, func() bool {
@@ -516,6 +516,99 @@ func TestPollRunnerStartStopRunsImmediately(t *testing.T) {
 	runner.Stop()
 	if runner.Status()["running"].(bool) {
 		t.Fatal("runner should be stopped")
+	}
+}
+
+func TestPollStartHandlerPrimesByDefault(t *testing.T) {
+	oldInjected := injectedMessages
+	oldPolled := polledMessages
+	oldReader := readVisibleText
+	injectedMessages = newDedupeStore()
+	polledMessages = newLastTextStore()
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "existing visible", "", nil
+	}
+	defer func() {
+		injectedMessages = oldInjected
+		polledMessages = oldPolled
+		readVisibleText = oldReader
+	}()
+
+	var callbackCount int32
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&callbackCount, 1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	runner := newPollRunner()
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+		InjectDedupeTTL:  time.Minute,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":1}`))
+	resp := httptest.NewRecorder()
+	pollStartHandler(cfg, runner)(resp, req)
+	defer runner.Stop()
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	waitFor(t, time.Second, func() bool {
+		return runner.Status()["run_count"].(int) >= 1
+	})
+	if got := atomic.LoadInt32(&callbackCount); got != 0 {
+		t.Fatalf("callbackCount=%d", got)
+	}
+	state := runner.Status()["last_state"].(map[string]any)
+	if state["prime"] != true || state["injected"] != false {
+		t.Fatalf("last_state=%#v", state)
+	}
+}
+
+func TestPollStartHandlerCanDisablePrime(t *testing.T) {
+	oldInjected := injectedMessages
+	oldPolled := polledMessages
+	oldReader := readVisibleText
+	injectedMessages = newDedupeStore()
+	polledMessages = newLastTextStore()
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "new visible", "", nil
+	}
+	defer func() {
+		injectedMessages = oldInjected
+		polledMessages = oldPolled
+		readVisibleText = oldReader
+	}()
+
+	var callbackCount int32
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&callbackCount, 1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	runner := newPollRunner()
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+		InjectDedupeTTL:  time.Minute,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":1,"prime_on_start":false}`))
+	resp := httptest.NewRecorder()
+	pollStartHandler(cfg, runner)(resp, req)
+	defer runner.Stop()
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	waitFor(t, time.Second, func() bool {
+		return atomic.LoadInt32(&callbackCount) == 1
+	})
+	state := runner.Status()["last_state"].(map[string]any)
+	if state["prime"] != false || state["injected"] != true {
+		t.Fatalf("last_state=%#v", state)
 	}
 }
 
@@ -538,7 +631,7 @@ func TestPollRunnerSkipsDuringPause(t *testing.T) {
 		Timeout:           time.Second,
 		OperatorPauseFile: path,
 	}
-	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1)); err != nil {
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), true); err != nil {
 		t.Fatal(err)
 	}
 	defer runner.Stop()

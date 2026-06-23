@@ -342,6 +342,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PollStop
 
 The poll loop is never started by default. `PollStart` runs one check immediately and then repeats at a low frequency; intervals below 30 seconds are clamped to 30 seconds. During operator takeover pause windows or a dynamic pause file, the loop records a skipped state and does not read or focus the WeChat window.
 
+By default, `PollStart` uses `prime_on_start=true`: the first immediate check records the current visible last text as the baseline with `inject=false`, so the bridge does not reply to an old message that was already on screen before polling started. Pass `{"prime_on_start":false}` only for a controlled smoke test where the current visible text should be injected immediately.
+
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 
 ```powershell

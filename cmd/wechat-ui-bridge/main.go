@@ -97,6 +97,7 @@ type pollLoopStartRequest struct {
 	ToWxID          string `json:"to_wxid"`
 	Contact         string `json:"contact"`
 	Inject          *bool  `json:"inject"`
+	PrimeOnStart    *bool  `json:"prime_on_start"`
 	IntervalSeconds int    `json:"interval_seconds"`
 }
 
@@ -682,7 +683,11 @@ func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
 			Contact:     req.Contact,
 			Inject:      req.Inject,
 		}
-		if err := runner.Start(cfg, pollReq, interval); err != nil {
+		prime := true
+		if req.PrimeOnStart != nil {
+			prime = *req.PrimeOnStart
+		}
+		if err := runner.Start(cfg, pollReq, interval, prime); err != nil {
 			writeClientError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -757,6 +762,7 @@ type pollRunner struct {
 	running   bool
 	interval  time.Duration
 	request   pollCurrentLastTextRequest
+	prime     bool
 	lastRun   string
 	lastError string
 	lastState map[string]any
@@ -790,7 +796,12 @@ func normalizePollInterval(seconds int) time.Duration {
 	return interval
 }
 
-func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration) error {
+func pollRequestWithInject(req pollCurrentLastTextRequest, inject bool) pollCurrentLastTextRequest {
+	req.Inject = &inject
+	return req
+}
+
+func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration, prime bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.running {
@@ -801,9 +812,10 @@ func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, int
 	p.running = true
 	p.interval = interval
 	p.request = req
+	p.prime = prime
 	p.lastError = ""
 	p.lastState = nil
-	go p.loop(ctx, cfg, req, interval)
+	go p.loop(ctx, cfg, req, interval, prime)
 	return nil
 }
 
@@ -825,6 +837,7 @@ func (p *pollRunner) Status() map[string]any {
 		"running":          p.running,
 		"interval_seconds": int(p.interval.Seconds()),
 		"request":          p.request,
+		"prime_on_start":   p.prime,
 		"last_run":         p.lastRun,
 		"last_error":       p.lastError,
 		"last_state":       p.lastState,
@@ -832,8 +845,12 @@ func (p *pollRunner) Status() map[string]any {
 	}
 }
 
-func (p *pollRunner) loop(ctx context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration) {
-	p.runOnce(ctx, cfg, req)
+func (p *pollRunner) loop(ctx context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration, prime bool) {
+	if prime {
+		p.runOnce(ctx, cfg, pollRequestWithInject(req, false), true)
+	} else {
+		p.runOnce(ctx, cfg, req, false)
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -841,18 +858,19 @@ func (p *pollRunner) loop(ctx context.Context, cfg bridgeConfig, req pollCurrent
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.runOnce(ctx, cfg, req)
+			p.runOnce(ctx, cfg, req, false)
 		}
 	}
 }
 
-func (p *pollRunner) runOnce(parent context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest) {
+func (p *pollRunner) runOnce(parent context.Context, cfg bridgeConfig, req pollCurrentLastTextRequest, prime bool) {
 	now := time.Now()
 	if state := currentPauseState(cfg, now); state.Paused {
 		p.recordPollResult(now, map[string]any{
 			"skipped": true,
 			"reason":  "operator pause active",
 			"pause":   state,
+			"prime":   prime,
 		}, "")
 		return
 	}
@@ -860,10 +878,11 @@ func (p *pollRunner) runOnce(parent context.Context, cfg bridgeConfig, req pollC
 	defer cancel()
 	result, status, err := pollCurrentLastText(ctx, cfg, req)
 	if err != nil {
-		p.recordPollResult(now, map[string]any{"status_code": status}, err.Error())
+		p.recordPollResult(now, map[string]any{"status_code": status, "prime": prime}, err.Error())
 		return
 	}
 	result["status_code"] = status
+	result["prime"] = prime
 	p.recordPollResult(now, result, "")
 }
 
