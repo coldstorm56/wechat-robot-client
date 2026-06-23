@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestParseAliasesAndContactName(t *testing.T) {
 	cfg := bridgeConfig{
@@ -39,5 +44,57 @@ func TestSplitComma(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got[%d]=%q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestPauseWindows(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, loc)
+	state := pauseStateFromWindows("test", "09:00-11:00,14:00-15:00", now)
+	if !state.Paused {
+		t.Fatal("expected current time to be paused")
+	}
+	if state.Until != "2026-06-24T11:00:00+08:00" {
+		t.Fatalf("until=%q", state.Until)
+	}
+
+	now = time.Date(2026, 6, 24, 12, 0, 0, 0, loc)
+	if state := pauseStateFromWindows("test", "09:00-11:00", now); state.Paused {
+		t.Fatalf("did not expect pause: %#v", state)
+	}
+}
+
+func TestPauseWindowAcrossMidnight(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 24, 23, 30, 0, 0, loc)
+	state := pauseStateFromWindows("test", "22:00-01:00", now)
+	if !state.Paused {
+		t.Fatal("expected overnight pause")
+	}
+	if state.Until != "2026-06-25T01:00:00+08:00" {
+		t.Fatalf("until=%q", state.Until)
+	}
+
+	now = time.Date(2026, 6, 24, 0, 30, 0, 0, loc)
+	if state := pauseStateFromWindows("test", "22:00-01:00", now); !state.Paused {
+		t.Fatal("expected after-midnight pause")
+	}
+}
+
+func TestPauseFileUntil(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, loc)
+	path := filepath.Join(t.TempDir(), "pause.json")
+	if err := os.WriteFile(path, []byte("\ufeff"+`{"pause_until":"2026-06-24T11:00:00+08:00","reason":"handoff"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := pauseStateFromFile(path, now)
+	if !state.Paused || state.Reason != "handoff" {
+		t.Fatalf("state=%#v", state)
+	}
+
+	now = time.Date(2026, 6, 24, 11, 1, 0, 0, loc)
+	if state := pauseStateFromFile(path, now); state.Paused {
+		t.Fatalf("pause should expire: %#v", state)
 	}
 }

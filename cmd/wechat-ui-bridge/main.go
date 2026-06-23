@@ -21,16 +21,18 @@ import (
 )
 
 type bridgeConfig struct {
-	Addr           string
-	Python         string
-	Script         string
-	BotWxID        string
-	BotName        string
-	ContactAliases map[string]string
-	Timeout        time.Duration
-	DryRun         bool
-	SendCurrent    bool
-	RequireVerify  bool
+	Addr                 string
+	Python               string
+	Script               string
+	BotWxID              string
+	BotName              string
+	ContactAliases       map[string]string
+	Timeout              time.Duration
+	DryRun               bool
+	SendCurrent          bool
+	RequireVerify        bool
+	OperatorPauseWindows string
+	OperatorPauseFile    string
 }
 
 type clientResponse struct {
@@ -66,6 +68,21 @@ type scriptOutput struct {
 	DeliveryStatus string `json:"delivery_status"`
 }
 
+type pauseState struct {
+	Paused bool   `json:"paused"`
+	Source string `json:"source,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	Until  string `json:"until,omitempty"`
+}
+
+type pauseFileConfig struct {
+	Paused     bool   `json:"paused"`
+	PauseUntil string `json:"pause_until"`
+	Until      string `json:"until"`
+	Reason     string `json:"reason"`
+	Windows    string `json:"windows"`
+}
+
 func main() {
 	cfg := loadConfig()
 	if err := ensureLoopbackAddr(cfg.Addr); err != nil {
@@ -79,6 +96,7 @@ func main() {
 	mux.HandleFunc("/api"+robot.FriendGetContactDetail, getContactDetailHandler(cfg))
 	mux.HandleFunc("/api"+robot.MsgSendTxt, sendTextHandler(cfg))
 	mux.HandleFunc("/api/Msg/CurrentLastText", readLastTextHandler(cfg))
+	mux.HandleFunc("/api/Operator/PauseStatus", pauseStatusHandler(cfg))
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -103,33 +121,51 @@ func loadConfig() bridgeConfig {
 	dryRun := flag.Bool("dry-run", envBool("WECHAT_UI_DRY_RUN", false), "return protocol-shaped success without touching WeChat UI")
 	sendCurrent := flag.Bool("send-current", envBool("WECHAT_UI_SEND_CURRENT_CHAT", true), "send to the currently open WeChat conversation instead of navigating by contact")
 	requireVerify := flag.Bool("require-verify", envBool("WECHAT_UI_SEND_REQUIRE_VERIFY", true), "require visible message verification before reporting send success")
+	pauseWindows := flag.String("operator-pause-windows", envString("WECHAT_UI_OPERATOR_PAUSE_WINDOWS", ""), "daily operator takeover windows, e.g. 09:00-12:00,18:30-20:00")
+	pauseFile := flag.String("operator-pause-file", envString("WECHAT_UI_OPERATOR_PAUSE_FILE", filepath.Join(os.TempDir(), "wechat-ui-operator-pause.json")), "optional local file for dynamic operator takeover pauses")
 	flag.Parse()
 
 	return bridgeConfig{
-		Addr:           strings.TrimSpace(*addr),
-		Python:         strings.TrimSpace(*python),
-		Script:         strings.TrimSpace(*script),
-		BotWxID:        strings.TrimSpace(*botWxID),
-		BotName:        strings.TrimSpace(*botName),
-		ContactAliases: parseAliases(*aliases),
-		Timeout:        time.Duration(*timeoutSeconds) * time.Second,
-		DryRun:         *dryRun,
-		SendCurrent:    *sendCurrent,
-		RequireVerify:  *requireVerify,
+		Addr:                 strings.TrimSpace(*addr),
+		Python:               strings.TrimSpace(*python),
+		Script:               strings.TrimSpace(*script),
+		BotWxID:              strings.TrimSpace(*botWxID),
+		BotName:              strings.TrimSpace(*botName),
+		ContactAliases:       parseAliases(*aliases),
+		Timeout:              time.Duration(*timeoutSeconds) * time.Second,
+		DryRun:               *dryRun,
+		SendCurrent:          *sendCurrent,
+		RequireVerify:        *requireVerify,
+		OperatorPauseWindows: strings.TrimSpace(*pauseWindows),
+		OperatorPauseFile:    strings.TrimSpace(*pauseFile),
 	}
 }
 
 func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		pause := currentPauseState(cfg, time.Now())
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":                true,
-			"status":            "live",
-			"bridge":            "wechat-ui",
-			"bot_wxid":          cfg.BotWxID,
-			"dry_run":           cfg.DryRun,
-			"send_current_chat": cfg.SendCurrent,
-			"require_verify":    cfg.RequireVerify,
+			"ok":                     true,
+			"status":                 "live",
+			"bridge":                 "wechat-ui",
+			"bot_wxid":               cfg.BotWxID,
+			"dry_run":                cfg.DryRun,
+			"send_current_chat":      cfg.SendCurrent,
+			"require_verify":         cfg.RequireVerify,
+			"operator_pause":         pause.Paused,
+			"operator_pause_state":   pause,
+			"operator_pause_file":    cfg.OperatorPauseFile,
+			"operator_pause_windows": cfg.OperatorPauseWindows,
 		})
+	}
+}
+
+func pauseStatusHandler(cfg bridgeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		writeClientOK(w, currentPauseState(cfg, time.Now()))
 	}
 }
 
@@ -198,6 +234,9 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		if !requirePost(w, r) {
 			return
 		}
+		if !allowAutomationNow(w, cfg) {
+			return
+		}
 		var req sendTextRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
@@ -261,6 +300,9 @@ func readLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		if !requirePost(w, r) {
 			return
 		}
+		if !allowAutomationNow(w, cfg) {
+			return
+		}
 		var req readLastRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
@@ -315,6 +357,192 @@ func runScript(parent context.Context, cfg bridgeConfig, args ...string) (script
 		return parsed, errors.New(parsed.Error)
 	}
 	return parsed, nil
+}
+
+func allowAutomationNow(w http.ResponseWriter, cfg bridgeConfig) bool {
+	state := currentPauseState(cfg, time.Now())
+	if !state.Paused {
+		return true
+	}
+	writeJSON(w, http.StatusLocked, clientResponse{
+		Success: false,
+		Code:    -2,
+		Message: "operator pause active",
+		Data:    state,
+	})
+	return false
+}
+
+func currentPauseState(cfg bridgeConfig, now time.Time) pauseState {
+	if state := pauseStateFromFile(cfg.OperatorPauseFile, now); state.Paused {
+		return state
+	}
+	if state := pauseStateFromWindows("env", cfg.OperatorPauseWindows, now); state.Paused {
+		return state
+	}
+	return pauseState{Paused: false}
+}
+
+func pauseStateFromFile(path string, now time.Time) pauseState {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return pauseState{}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return pauseState{}
+		}
+		return pauseState{Paused: true, Source: "file", Reason: fmt.Sprintf("read pause file %s: %v", path, err)}
+	}
+	return pauseStateFromContent("file", strings.TrimSpace(string(content)), now)
+}
+
+func pauseStateFromContent(source, content string, now time.Time) pauseState {
+	content = strings.TrimSpace(strings.TrimPrefix(content, "\ufeff"))
+	if content == "" {
+		return pauseState{}
+	}
+	lower := strings.ToLower(content)
+	if lower == "off" || lower == "resume" || lower == "false" || lower == "0" {
+		return pauseState{}
+	}
+	if strings.HasPrefix(content, "{") {
+		var cfg pauseFileConfig
+		if err := json.Unmarshal([]byte(content), &cfg); err != nil {
+			return pauseState{Paused: true, Source: source, Reason: fmt.Sprintf("invalid pause file JSON: %v", err)}
+		}
+		if cfg.Windows != "" {
+			if state := pauseStateFromWindows(source, cfg.Windows, now); state.Paused {
+				if cfg.Reason != "" {
+					state.Reason = cfg.Reason
+				}
+				return state
+			}
+		}
+		until := strings.TrimSpace(cfg.PauseUntil)
+		if until == "" {
+			until = strings.TrimSpace(cfg.Until)
+		}
+		if until != "" {
+			return pauseStateUntil(source, until, cfg.Reason, now)
+		}
+		if cfg.Paused {
+			reason := cfg.Reason
+			if reason == "" {
+				reason = "manual operator takeover"
+			}
+			return pauseState{Paused: true, Source: source, Reason: reason}
+		}
+		return pauseState{}
+	}
+	if strings.Contains(content, "-") && strings.Contains(content, ":") && !strings.Contains(content, "T") {
+		return pauseStateFromWindows(source, content, now)
+	}
+	if strings.HasPrefix(lower, "until=") {
+		return pauseStateUntil(source, strings.TrimSpace(content[len("until="):]), "manual operator takeover", now)
+	}
+	if lower == "pause" || lower == "paused" || lower == "true" || lower == "1" {
+		return pauseState{Paused: true, Source: source, Reason: "manual operator takeover"}
+	}
+	return pauseStateUntil(source, content, "manual operator takeover", now)
+}
+
+func pauseStateUntil(source, rawUntil, reason string, now time.Time) pauseState {
+	until, err := parsePauseUntil(rawUntil, now.Location())
+	if err != nil {
+		return pauseState{Paused: true, Source: source, Reason: fmt.Sprintf("invalid pause-until value %q: %v", rawUntil, err)}
+	}
+	if !until.After(now) {
+		return pauseState{}
+	}
+	if reason == "" {
+		reason = "manual operator takeover"
+	}
+	return pauseState{
+		Paused: true,
+		Source: source,
+		Reason: reason,
+		Until:  until.Format(time.RFC3339),
+	}
+}
+
+func parsePauseUntil(raw string, loc *time.Location) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02 15:04",
+		"2006-01-02 15:04:05",
+		"2006/01/02 15:04",
+		"2006/01/02 15:04:05",
+	} {
+		if t, err := time.ParseInLocation(layout, value, loc); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("expected RFC3339 or local datetime")
+}
+
+func pauseStateFromWindows(source, raw string, now time.Time) pauseState {
+	for _, window := range splitComma(raw) {
+		startRaw, endRaw, ok := strings.Cut(window, "-")
+		if !ok {
+			return pauseState{Paused: true, Source: source, Reason: fmt.Sprintf("invalid pause window %q", window)}
+		}
+		start, err := parseClock(startRaw)
+		if err != nil {
+			return pauseState{Paused: true, Source: source, Reason: fmt.Sprintf("invalid pause window %q: %v", window, err)}
+		}
+		end, err := parseClock(endRaw)
+		if err != nil {
+			return pauseState{Paused: true, Source: source, Reason: fmt.Sprintf("invalid pause window %q: %v", window, err)}
+		}
+		nowMinutes := now.Hour()*60 + now.Minute()
+		if clockInWindow(nowMinutes, start, end) {
+			return pauseState{
+				Paused: true,
+				Source: source,
+				Reason: fmt.Sprintf("operator takeover window %s", window),
+				Until:  nextWindowEnd(now, start, end).Format(time.RFC3339),
+			}
+		}
+	}
+	return pauseState{}
+}
+
+func parseClock(raw string) (int, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("expected HH:MM")
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return 0, fmt.Errorf("invalid hour")
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return 0, fmt.Errorf("invalid minute")
+	}
+	return hour*60 + minute, nil
+}
+
+func clockInWindow(now, start, end int) bool {
+	if start == end {
+		return true
+	}
+	if start < end {
+		return now >= start && now < end
+	}
+	return now >= start || now < end
+}
+
+func nextWindowEnd(now time.Time, start, end int) time.Time {
+	endTime := time.Date(now.Year(), now.Month(), now.Day(), end/60, end%60, 0, 0, now.Location())
+	nowMinutes := now.Hour()*60 + now.Minute()
+	if start >= end && nowMinutes >= start {
+		endTime = endTime.Add(24 * time.Hour)
+	}
+	return endTime
 }
 
 func contactName(cfg bridgeConfig, wxid string) string {

@@ -9,6 +9,7 @@
 - Runtime check: switch WeChat UI send/read smoke evidence to local chat-area OCR; verified `Codex visible OCR smoke 2026-06-23` in File Transfer Assistant and read it back as the last visible text.
 - Protocol bridge: keep current-chat read mode aligned with current-chat send mode so bridge smoke checks do not enter WeChat 4.x contact search by default.
 - Runtime safety: document WeChat 4.x MMUI input-focus risk; bridge send attempts fail closed when visible OCR delivery cannot prove the message was sent.
+- Runtime safety: add operator takeover pause windows and a local dynamic pause file so the WeChat UI bridge can avoid send/read automation during human handoff periods.
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.

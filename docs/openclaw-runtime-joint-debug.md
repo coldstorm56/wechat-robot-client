@@ -179,6 +179,7 @@ OCR notes:
 - `read-last` returns the last OCR-readable visible text in the chat area, not a protocol message object.
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
 - If a send attempt fails and OCR still shows only older messages, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
+- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden.
 
 Safety notes:
 
@@ -186,6 +187,7 @@ Safety notes:
 - It only focuses WeChat during explicit `send` or `read-last` commands.
 - It restores the previous clipboard text and foreground window by default.
 - Failures are logged to `%TEMP%\wechat-ui-automation-bridge.log` unless `WECHAT_UI_LOG_PATH` overrides it.
+- The bridge supports operator takeover pauses. During a pause, send/read endpoints return `operator pause active` and do not touch the WeChat window.
 - For daily-use safety, send actions should remain explicit until the bridge has a tested trigger, whitelist, and pause control.
 
 Start the local compatibility bridge:
@@ -197,7 +199,27 @@ $env:WECHAT_UI_BOT_NAME='此刻正佳'
 $env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
 $env:WECHAT_UI_SEND_CURRENT_CHAT='true'
 $env:WECHAT_UI_SEND_REQUIRE_VERIFY='true'
+$env:WECHAT_UI_OPERATOR_PAUSE_WINDOWS='12:00-13:30,19:00-22:00'
+$env:WECHAT_UI_OPERATOR_PAUSE_FILE="$env:TEMP\wechat-ui-operator-pause.json"
 go run ./cmd/wechat-ui-bridge
+```
+
+Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`.
+
+For an immediate temporary human takeover without restarting the bridge:
+
+```powershell
+$pauseFile = "$env:TEMP\wechat-ui-operator-pause.json"
+@{
+  pause_until = '2026-06-24T18:30:00+08:00'
+  reason = 'operator takeover'
+} | ConvertTo-Json | Set-Content -Encoding UTF8 $pauseFile
+```
+
+To resume immediately:
+
+```powershell
+Remove-Item "$env:TEMP\wechat-ui-operator-pause.json" -ErrorAction SilentlyContinue
 ```
 
 The bridge exposes a minimal old-protocol-compatible subset:
@@ -225,6 +247,7 @@ Bridge smoke checks:
 ```powershell
 Invoke-RestMethod http://127.0.0.1:3021/health
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Login/GetCacheInfo
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseStatus
 Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:3021/api/Msg/CurrentLastText `
   -ContentType 'application/json' `
