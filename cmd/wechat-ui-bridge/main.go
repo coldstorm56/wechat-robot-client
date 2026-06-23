@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"wechat-robot-client/model"
 	"wechat-robot-client/pkg/robot"
 )
 
@@ -34,6 +37,7 @@ type bridgeConfig struct {
 	ExpectChatTitle      string
 	OperatorPauseWindows string
 	OperatorPauseFile    string
+	AssistantSyncURL     string
 }
 
 type clientResponse struct {
@@ -60,6 +64,16 @@ type contactDetailRequest struct {
 type readLastRequest struct {
 	Contact string `json:"contact"`
 	ToWxID  string `json:"to_wxid"`
+}
+
+type injectCurrentLastTextRequest struct {
+	CallbackURL string `json:"callback_url"`
+	WechatID    string `json:"wechat_id"`
+	FromWxID    string `json:"from_wxid"`
+	ToWxID      string `json:"to_wxid"`
+	Contact     string `json:"contact"`
+	Content     string `json:"content"`
+	PushContent string `json:"push_content"`
 }
 
 type scriptOutput struct {
@@ -111,6 +125,7 @@ func main() {
 	mux.HandleFunc("/api/Operator/PauseSet", pauseSetHandler(cfg))
 	mux.HandleFunc("/api/Operator/PauseClear", pauseClearHandler(cfg))
 	mux.HandleFunc("/api/Operator/UiStatus", uiStatusHandler(cfg))
+	mux.HandleFunc("/api/Operator/InjectCurrentLastText", injectCurrentLastTextHandler(cfg))
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -138,6 +153,7 @@ func loadConfig() bridgeConfig {
 	expectChatTitle := flag.String("expect-chat-title", envString("WECHAT_UI_EXPECT_CHAT_TITLE", ""), "optional current chat title that must be visible before send/read automation runs")
 	pauseWindows := flag.String("operator-pause-windows", envString("WECHAT_UI_OPERATOR_PAUSE_WINDOWS", ""), "daily operator takeover windows, e.g. 09:00-12:00,18:30-20:00")
 	pauseFile := flag.String("operator-pause-file", envString("WECHAT_UI_OPERATOR_PAUSE_FILE", filepath.Join(os.TempDir(), "wechat-ui-operator-pause.json")), "optional local file for dynamic operator takeover pauses")
+	assistantSyncURL := flag.String("assistant-sync-url", envString("WECHAT_UI_ASSISTANT_SYNC_URL", ""), "optional loopback main-service sync-message callback URL")
 	flag.Parse()
 
 	return bridgeConfig{
@@ -154,6 +170,7 @@ func loadConfig() bridgeConfig {
 		ExpectChatTitle:      strings.TrimSpace(*expectChatTitle),
 		OperatorPauseWindows: strings.TrimSpace(*pauseWindows),
 		OperatorPauseFile:    strings.TrimSpace(*pauseFile),
+		AssistantSyncURL:     strings.TrimSpace(*assistantSyncURL),
 	}
 }
 
@@ -173,6 +190,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"operator_pause_state":   pause,
 			"operator_pause_file":    cfg.OperatorPauseFile,
 			"operator_pause_windows": cfg.OperatorPauseWindows,
+			"assistant_sync_url":     cfg.AssistantSyncURL,
 		})
 	}
 }
@@ -393,30 +411,164 @@ func readLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
 			return
 		}
-		contact := ""
-		if !cfg.SendCurrent {
-			contact = strings.TrimSpace(req.Contact)
-			if contact == "" && strings.TrimSpace(req.ToWxID) != "" {
-				contact = contactName(cfg, req.ToWxID)
-			}
-		}
-		args := []string{"read-last"}
-		if cfg.ExpectChatTitle != "" {
-			args = append(args, "--expect-title", cfg.ExpectChatTitle)
-		}
-		if contact != "" {
-			args = append(args, "--contact", contact)
-		}
-		output, err := runScript(r.Context(), cfg, args...)
+		last, contact, err := readCurrentLastText(r.Context(), cfg, req)
 		if err != nil {
 			writeClientError(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		writeClientOK(w, map[string]any{
 			"contact":   contact,
-			"last_text": output.LastText,
+			"last_text": last,
 		})
 	}
+}
+
+func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !allowAutomationNow(w, cfg) {
+			return
+		}
+		var req injectCurrentLastTextRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
+			return
+		}
+		callbackURL := firstNonEmpty(req.CallbackURL, cfg.AssistantSyncURL)
+		if callbackURL == "" {
+			writeClientError(w, http.StatusBadRequest, "callback_url or WECHAT_UI_ASSISTANT_SYNC_URL is required")
+			return
+		}
+		if err := ensureLoopbackURL(callbackURL); err != nil {
+			writeClientError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		wechatID := firstNonEmpty(req.WechatID, cfg.BotWxID)
+		toWxID := firstNonEmpty(req.ToWxID, cfg.BotWxID)
+		fromWxID := firstNonEmpty(req.FromWxID, req.Contact, "filehelper")
+		content := strings.TrimSpace(req.Content)
+		contact := strings.TrimSpace(req.Contact)
+		if content == "" {
+			var err error
+			content, contact, err = readCurrentLastText(r.Context(), cfg, readLastRequest{
+				Contact: req.Contact,
+				ToWxID:  fromWxID,
+			})
+			if err != nil {
+				writeClientError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			if contact != "" && strings.TrimSpace(req.FromWxID) == "" {
+				fromWxID = contact
+			}
+		}
+		content = strings.TrimSpace(content)
+		if content == "" {
+			writeClientError(w, http.StatusBadGateway, "current visible last text is empty")
+			return
+		}
+		payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, req.PushContent, time.Now())
+		result, err := postSyncMessage(r.Context(), cfg, callbackURL, payload)
+		if err != nil {
+			writeClientError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeClientOK(w, map[string]any{
+			"callback_url": callbackURL,
+			"wechat_id":    wechatID,
+			"from_wxid":    fromWxID,
+			"to_wxid":      toWxID,
+			"content":      content,
+			"msg_id":       msgID,
+			"contact":      contact,
+			"status_code":  result.statusCode,
+			"response":     result.body,
+		})
+	}
+}
+
+func readCurrentLastText(ctx context.Context, cfg bridgeConfig, req readLastRequest) (string, string, error) {
+	contact := ""
+	if !cfg.SendCurrent {
+		contact = strings.TrimSpace(req.Contact)
+		if contact == "" && strings.TrimSpace(req.ToWxID) != "" {
+			contact = contactName(cfg, req.ToWxID)
+		}
+	}
+	args := []string{"read-last"}
+	if cfg.ExpectChatTitle != "" {
+		args = append(args, "--expect-title", cfg.ExpectChatTitle)
+	}
+	if contact != "" {
+		args = append(args, "--contact", contact)
+	}
+	output, err := runScript(ctx, cfg, args...)
+	if err != nil {
+		return "", contact, err
+	}
+	return output.LastText, contact, nil
+}
+
+type syncPostResult struct {
+	statusCode int
+	body       string
+}
+
+func postSyncMessage(parent context.Context, cfg bridgeConfig, callbackURL string, payload clientResponse) (syncPostResult, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return syncPostResult{}, fmt.Errorf("marshal sync-message callback: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(parent, cfg.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(body))
+	if err != nil {
+		return syncPostResult{}, fmt.Errorf("create sync-message callback request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return syncPostResult{}, fmt.Errorf("post sync-message callback: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	result := syncPostResult{statusCode: resp.StatusCode, body: strings.TrimSpace(string(raw))}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, fmt.Errorf("sync-message callback returned HTTP %d: %s", resp.StatusCode, result.body)
+	}
+	return result, nil
+}
+
+func buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, pushContent string, now time.Time) (clientResponse, int64) {
+	msgID := now.UnixNano() / int64(time.Millisecond)
+	if strings.TrimSpace(pushContent) == "" {
+		pushContent = content
+	}
+	return clientResponse{
+		Success: true,
+		Code:    0,
+		Message: "ok",
+		Data: robot.SyncMessage{
+			AddMsgs: []robot.Message{
+				{
+					MsgId:        msgID,
+					NewMsgId:     msgID,
+					FromUserName: robotString(fromWxID),
+					ToUserName:   robotString(toWxID),
+					Content:      robotString(content),
+					CreateTime:   now.Unix(),
+					MsgType:      model.MsgTypeText,
+					Status:       3,
+					PushContent:  pushContent,
+				},
+			},
+			Status:  1,
+			Time:    int(now.Unix()),
+			Remarks: fmt.Sprintf("wechat-ui injected for %s", wechatID),
+		},
+	}, msgID
 }
 
 func runScript(parent context.Context, cfg bridgeConfig, args ...string) (scriptOutput, error) {
@@ -721,6 +873,25 @@ func ensureLoopbackAddr(addr string) error {
 	return nil
 }
 
+func ensureLoopbackURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid callback_url %q: %w", raw, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("callback_url must use http or https")
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("callback_url must include a host")
+	}
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("refuse to post sync-message callback to non-loopback host %q", host)
+	}
+	return nil
+}
+
 func requirePost(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method == http.MethodPost {
 		return true
@@ -757,6 +928,20 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func skString(value string) map[string]string {
 	return map[string]string{"string": value}
+}
+
+func robotString(value string) robot.SKBuiltinStringT {
+	return robot.SKBuiltinStringT{String: &value}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func splitComma(value string) []string {

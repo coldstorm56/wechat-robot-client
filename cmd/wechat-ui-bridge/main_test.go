@@ -1,10 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"wechat-robot-client/pkg/robot"
 )
 
 func TestParseAliasesAndContactName(t *testing.T) {
@@ -31,6 +38,19 @@ func TestEnsureLoopbackAddr(t *testing.T) {
 	}
 	if err := ensureLoopbackAddr("0.0.0.0:3021"); err == nil {
 		t.Fatal("expected non-loopback address to be rejected")
+	}
+}
+
+func TestEnsureLoopbackURL(t *testing.T) {
+	for _, raw := range []string{"http://127.0.0.1:9001/api/v1/wechat-client/wechat_ui_bot/sync-message", "http://localhost:9001/callback", "https://[::1]:9001/callback"} {
+		if err := ensureLoopbackURL(raw); err != nil {
+			t.Fatalf("expected %s to be accepted: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"http://example.com/callback", "ftp://127.0.0.1/callback", "/callback"} {
+		if err := ensureLoopbackURL(raw); err == nil {
+			t.Fatalf("expected %s to be rejected", raw)
+		}
 	}
 }
 
@@ -130,5 +150,85 @@ func TestWritePauseFileRoundTrip(t *testing.T) {
 	state := pauseStateFromFile(path, now)
 	if !state.Paused || state.Reason != "manual takeover" || state.Until != "2026-06-24T11:00:00+08:00" {
 		t.Fatalf("state=%#v", state)
+	}
+}
+
+func TestBuildSyncMessageCallbackPayload(t *testing.T) {
+	now := time.Unix(1_770_000_000, 123_000_000)
+	payload, msgID := buildSyncMessageCallbackPayload("wechat_ui_bot", "filehelper", "wechat_ui_bot", "hello", "", now)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded robot.ClientResponse[robot.SyncMessage]
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Success || decoded.Code != 0 {
+		t.Fatalf("decoded response=%#v", decoded)
+	}
+	if len(decoded.Data.AddMsgs) != 1 {
+		t.Fatalf("AddMsgs len=%d", len(decoded.Data.AddMsgs))
+	}
+	msg := decoded.Data.AddMsgs[0]
+	if msgID != 1770000000123 || msg.NewMsgId != msgID || msg.MsgId != msgID {
+		t.Fatalf("msg ids got msgID=%d msg=%#v", msgID, msg)
+	}
+	if *msg.FromUserName.String != "filehelper" || *msg.ToUserName.String != "wechat_ui_bot" || *msg.Content.String != "hello" {
+		t.Fatalf("unexpected message=%#v", msg)
+	}
+}
+
+func TestInjectCurrentLastTextHandlerPostsProvidedContent(t *testing.T) {
+	called := false
+	var callbackErr error
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/api/v1/wechat-client/wechat_ui_bot/sync-message" {
+			callbackErr = fmt.Errorf("path=%s", r.URL.Path)
+			http.Error(w, callbackErr.Error(), http.StatusBadRequest)
+			return
+		}
+		var payload robot.ClientResponse[robot.SyncMessage]
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			callbackErr = err
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(payload.Data.AddMsgs) != 1 {
+			callbackErr = fmt.Errorf("AddMsgs len=%d", len(payload.Data.AddMsgs))
+			http.Error(w, callbackErr.Error(), http.StatusBadRequest)
+			return
+		}
+		msg := payload.Data.AddMsgs[0]
+		if *msg.FromUserName.String != "filehelper" || *msg.ToUserName.String != "wechat_ui_bot" || *msg.Content.String != "visible hello" {
+			callbackErr = fmt.Errorf("message=%#v", msg)
+			http.Error(w, callbackErr.Error(), http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+	}
+	body := `{"from_wxid":"filehelper","content":"visible hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/InjectCurrentLastText", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	injectCurrentLastTextHandler(cfg)(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !called {
+		t.Fatal("callback was not called")
+	}
+	if callbackErr != nil {
+		t.Fatal(callbackErr)
 	}
 }
