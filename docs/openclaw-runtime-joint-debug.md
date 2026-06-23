@@ -180,6 +180,7 @@ OCR notes:
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
 - If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
 - Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden.
+- For current-chat mode, set an expected visible chat title such as `文件传输助手`; the bridge will fail before touching the editor when WeChat is on a different surface such as Service Accounts, Contacts, or search results.
 
 Safety notes:
 
@@ -199,6 +200,7 @@ $env:WECHAT_UI_BOT_NAME='此刻正佳'
 $env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
 $env:WECHAT_UI_SEND_CURRENT_CHAT='true'
 $env:WECHAT_UI_SEND_REQUIRE_VERIFY='true'
+$env:WECHAT_UI_EXPECT_CHAT_TITLE='文件传输助手'
 $env:WECHAT_UI_OPERATOR_PAUSE_WINDOWS='12:00-13:30,19:00-22:00'
 $env:WECHAT_UI_OPERATOR_PAUSE_FILE="$env:TEMP\wechat-ui-operator-pause.json"
 go run ./cmd/wechat-ui-bridge

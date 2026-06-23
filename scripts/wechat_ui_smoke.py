@@ -314,6 +314,7 @@ def send_text(
     ctrl: auto.Control,
     contact: str,
     message: str,
+    expected_title: str,
     verify_editor: bool,
     editor_verify_timeout: float,
 ) -> str:
@@ -321,6 +322,8 @@ def send_text(
         open_contact(ctrl, contact)
     else:
         activate(ctrl)
+    if expected_title:
+        verify_conversation_title(ctrl, expected_title)
     click_message_input(ctrl)
     paste_text(message)
     time.sleep(0.2)
@@ -371,6 +374,18 @@ def normalize_for_match(text: str) -> str:
     return re.sub(r"[\W_]+", "", text, flags=re.UNICODE).lower()
 
 
+def contains_normalized(text: str, expected: str) -> bool:
+    normalized_expected = normalize_for_match(expected)
+    return bool(normalized_expected and normalized_expected in normalize_for_match(text))
+
+
+def verify_conversation_title(ctrl: auto.Control, expected: str) -> str:
+    text = "\n".join(ocr_title_texts(ctrl))
+    if contains_normalized(text, expected):
+        return text
+    raise RuntimeError(f"current WeChat conversation title did not match {expected!r}: {text!r}")
+
+
 def ocr_rect_texts(rect: tuple[int, int, int, int]) -> list[str]:
     try:
         from rapidocr import RapidOCR
@@ -378,7 +393,7 @@ def ocr_rect_texts(rect: tuple[int, int, int, int]) -> list[str]:
         raise RuntimeError("rapidocr is required for visible send verification") from exc
 
     left, top, right, bottom = rect
-    if right - left < 200 or bottom - top < 200:
+    if right - left < 50 or bottom - top < 20:
         raise RuntimeError("cannot OCR an unusable WeChat window")
     image = ImageGrab.grab((left, top, right, bottom))
     sink = io.StringIO()
@@ -394,6 +409,23 @@ def ocr_rect_texts(rect: tuple[int, int, int, int]) -> list[str]:
 
 def ocr_window_texts(ctrl: auto.Control) -> list[str]:
     return ocr_rect_texts(screenshot_rect(ctrl))
+
+
+def ocr_title_texts(ctrl: auto.Control) -> list[str]:
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    if hwnd and win32gui.GetForegroundWindow() != hwnd:
+        raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered title area")
+    left, top, right, bottom = screenshot_rect(ctrl)
+    width = right - left
+    height = bottom - top
+    return ocr_rect_texts(
+        (
+            left + int(width * 0.30),
+            top + int(height * 0.02),
+            left + int(width * 0.72),
+            top + int(height * 0.10),
+        )
+    )
 
 
 def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
@@ -453,10 +485,12 @@ def collect_texts_deep(ctrl: auto.Control, remaining: int) -> list[str]:
     return values
 
 
-def read_last_text(ctrl: auto.Control, contact: str | None) -> str:
+def read_last_text(ctrl: auto.Control, contact: str | None, expected_title: str) -> str:
     if contact:
         open_contact(ctrl, contact)
     activate(ctrl)
+    if expected_title:
+        verify_conversation_title(ctrl, expected_title)
     texts = [text for text in ocr_chat_texts(ctrl) if text.strip()]
     if any("搜一搜" in text for text in texts[:10]):
         raise RuntimeError("current WeChat UIA document is a search page, not a chat message list")
@@ -519,6 +553,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             window,
             args.contact,
             args.message,
+            args.expect_title,
             args.verify_editor,
             args.editor_verify_timeout,
         )
@@ -542,7 +577,7 @@ def cmd_send(args: argparse.Namespace) -> int:
 def cmd_read_last(args: argparse.Namespace) -> int:
     with preserved_desktop_state(restore_window=not args.keep_focus):
         window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
-        text = read_last_text(window, args.contact)
+        text = read_last_text(window, args.contact, args.expect_title)
     json_print({"ok": True, "contact": args.contact, "last_text": text})
     return 0
 
@@ -560,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     send = sub.add_parser("send", help="send a text message through the WeChat UI")
     send.add_argument("--contact", default=None, help="experimental: navigate by contact name before sending")
+    send.add_argument("--expect-title", default=None, help="fail before touching the editor unless the current title matches this text")
     send.add_argument("--message", required=True)
     send.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="require the submitted text to become visible before returning ok")
     send.add_argument("--verify-timeout", type=float, default=5)
@@ -569,6 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     read_last = sub.add_parser("read-last", help="read the last visible text from a conversation")
     read_last.add_argument("--contact", default=None)
+    read_last.add_argument("--expect-title", default=None)
     read_last.set_defaults(func=cmd_read_last)
 
     return parser

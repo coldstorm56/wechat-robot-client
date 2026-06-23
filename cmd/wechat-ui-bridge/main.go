@@ -31,6 +31,7 @@ type bridgeConfig struct {
 	DryRun               bool
 	SendCurrent          bool
 	RequireVerify        bool
+	ExpectChatTitle      string
 	OperatorPauseWindows string
 	OperatorPauseFile    string
 }
@@ -121,6 +122,7 @@ func loadConfig() bridgeConfig {
 	dryRun := flag.Bool("dry-run", envBool("WECHAT_UI_DRY_RUN", false), "return protocol-shaped success without touching WeChat UI")
 	sendCurrent := flag.Bool("send-current", envBool("WECHAT_UI_SEND_CURRENT_CHAT", true), "send to the currently open WeChat conversation instead of navigating by contact")
 	requireVerify := flag.Bool("require-verify", envBool("WECHAT_UI_SEND_REQUIRE_VERIFY", true), "require visible message verification before reporting send success")
+	expectChatTitle := flag.String("expect-chat-title", envString("WECHAT_UI_EXPECT_CHAT_TITLE", ""), "optional current chat title that must be visible before send/read automation runs")
 	pauseWindows := flag.String("operator-pause-windows", envString("WECHAT_UI_OPERATOR_PAUSE_WINDOWS", ""), "daily operator takeover windows, e.g. 09:00-12:00,18:30-20:00")
 	pauseFile := flag.String("operator-pause-file", envString("WECHAT_UI_OPERATOR_PAUSE_FILE", filepath.Join(os.TempDir(), "wechat-ui-operator-pause.json")), "optional local file for dynamic operator takeover pauses")
 	flag.Parse()
@@ -136,6 +138,7 @@ func loadConfig() bridgeConfig {
 		DryRun:               *dryRun,
 		SendCurrent:          *sendCurrent,
 		RequireVerify:        *requireVerify,
+		ExpectChatTitle:      strings.TrimSpace(*expectChatTitle),
 		OperatorPauseWindows: strings.TrimSpace(*pauseWindows),
 		OperatorPauseFile:    strings.TrimSpace(*pauseFile),
 	}
@@ -152,6 +155,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"dry_run":                cfg.DryRun,
 			"send_current_chat":      cfg.SendCurrent,
 			"require_verify":         cfg.RequireVerify,
+			"expect_chat_title":      cfg.ExpectChatTitle,
 			"operator_pause":         pause.Paused,
 			"operator_pause_state":   pause,
 			"operator_pause_file":    cfg.OperatorPauseFile,
@@ -255,6 +259,9 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		deliveryStatus := "dry_run"
 		if !cfg.DryRun {
 			args := []string{"send", "--message", req.Content}
+			if cfg.ExpectChatTitle != "" {
+				args = append(args, "--expect-title", cfg.ExpectChatTitle)
+			}
 			if !cfg.SendCurrent {
 				args = append(args, "--contact", contact)
 			}
@@ -316,6 +323,9 @@ func readLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			}
 		}
 		args := []string{"read-last"}
+		if cfg.ExpectChatTitle != "" {
+			args = append(args, "--expect-title", cfg.ExpectChatTitle)
+		}
 		if contact != "" {
 			args = append(args, "--contact", contact)
 		}
