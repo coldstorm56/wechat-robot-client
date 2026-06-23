@@ -181,6 +181,46 @@ func TestBuildSyncMessageCallbackPayload(t *testing.T) {
 	}
 }
 
+func TestBuildSyncMessageCallbackPayloadWithChatRoomSenderAndAt(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	payload, _ := buildSyncMessageCallbackPayloadWithOptions(
+		"wechat_ui_bot",
+		"room@chatroom",
+		"wechat_ui_bot",
+		"助手：你好",
+		"",
+		now,
+		syncMessageBuildOptions{SenderWxID: "wxid_user", AtWxID: "wechat_ui_bot"},
+	)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded robot.ClientResponse[robot.SyncMessage]
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	msg := decoded.Data.AddMsgs[0]
+	if got := *msg.Content.String; got != "wxid_user:\n助手：你好" {
+		t.Fatalf("content=%q", got)
+	}
+	if got := msg.MsgSource; got != "<msgsource><atuserlist>wechat_ui_bot</atuserlist></msgsource>" {
+		t.Fatalf("msgSource=%q", got)
+	}
+}
+
+func TestResolveAtWxID(t *testing.T) {
+	if got := resolveAtWxID("", "wechat_ui_bot", true); got != "wechat_ui_bot" {
+		t.Fatalf("got %q", got)
+	}
+	if got := resolveAtWxID("wxid_other", "wechat_ui_bot", true); got != "wxid_other" {
+		t.Fatalf("got %q", got)
+	}
+	if got := resolveAtWxID("", "wechat_ui_bot", false); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestInjectCurrentLastTextHandlerPostsProvidedContent(t *testing.T) {
 	called := false
 	var callbackErr error
@@ -218,6 +258,60 @@ func TestInjectCurrentLastTextHandlerPostsProvidedContent(t *testing.T) {
 		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
 	}
 	body := `{"from_wxid":"filehelper","content":"visible hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/InjectCurrentLastText", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	injectCurrentLastTextHandler(cfg)(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !called {
+		t.Fatal("callback was not called")
+	}
+	if callbackErr != nil {
+		t.Fatal(callbackErr)
+	}
+}
+
+func TestInjectCurrentLastTextHandlerPostsChatRoomPayload(t *testing.T) {
+	called := false
+	var callbackErr error
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		var payload robot.ClientResponse[robot.SyncMessage]
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			callbackErr = err
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		msg := payload.Data.AddMsgs[0]
+		if *msg.FromUserName.String != "room@chatroom" || *msg.ToUserName.String != "wechat_ui_bot" {
+			callbackErr = fmt.Errorf("unexpected users: %#v", msg)
+			http.Error(w, callbackErr.Error(), http.StatusBadRequest)
+			return
+		}
+		if got := *msg.Content.String; got != "wxid_user:\n助手：群聊 smoke" {
+			callbackErr = fmt.Errorf("content=%q", got)
+			http.Error(w, callbackErr.Error(), http.StatusBadRequest)
+			return
+		}
+		if got := msg.MsgSource; got != "<msgsource><atuserlist>wechat_ui_bot</atuserlist></msgsource>" {
+			callbackErr = fmt.Errorf("msgSource=%q", got)
+			http.Error(w, callbackErr.Error(), http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer callback.Close()
+
+	cfg := bridgeConfig{
+		BotWxID:          "wechat_ui_bot",
+		Timeout:          time.Second,
+		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
+	}
+	body := `{"from_wxid":"room@chatroom","sender_wxid":"wxid_user","content":"助手：群聊 smoke","at_bot":true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/Operator/InjectCurrentLastText", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()

@@ -317,6 +317,17 @@ Manual injection has a local in-memory duplicate guard. By default, the same `we
 
 The bridge also keeps a short in-memory record of text it has just sent through `SendTxt`. By default, if polling sees the same text in the same conversation within 300 seconds, it reports `skipped=true` with `reason=outgoing echo` and does not inject it into the assistant flow. Set `WECHAT_UI_OUTGOING_ECHO_TTL_SECONDS=0` only for controlled debugging.
 
+For group-style injection, pass a chatroom `from_wxid`, a `sender_wxid`, and optionally `at_bot=true` or `at_wxid`:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/InjectCurrentLastText `
+  -ContentType 'application/json' `
+  -Body '{"from_wxid":"room@chatroom","sender_wxid":"wxid_user","content":"助手：群聊 smoke","at_bot":true}'
+```
+
+The bridge formats this as the existing callback expects: `Content` becomes `sender_wxid:\ntext`, and `at_bot=true` writes the bot wxid into `MsgSource`/`atuserlist` so the main service can set `IsAtMe`. This is only the payload bridge foundation; reliable sender extraction from the WeChat 4.x UI still needs a later UI parsing stage.
+
 Single-step poll smoke:
 
 ```powershell
@@ -350,4 +361,4 @@ Point the main service at this bridge only after the explicit send/read smoke ch
 $env:WECHAT_SERVER_HOST='127.0.0.1:3021'
 ```
 
-Current bridge boundary: this first bridge wraps explicit text submission to the currently open conversation, OCR-based visible last-text reads, manual current-last-text injection into the existing assistant sync callback, single-step changed-text polling, an explicit low-frequency poll loop, and recent outgoing echo suppression. With `WECHAT_UI_SEND_CURRENT_CHAT=true`, both bridge send and bridge read avoid automatic contact search even if a `filehelper`/`to_wxid` field is provided. A keyboard submission is not accepted as real delivery unless the same text becomes visible in the WeChat UI. On the current Windows WeChat 4.x client, contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path, and message-editor focus can fail from a background bridge process. Group `@` detection from UI text, prefix detection from UI text, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.
+Current bridge boundary: this first bridge wraps explicit text submission to the currently open conversation, OCR-based visible last-text reads, manual current-last-text injection into the existing assistant sync callback, group-shaped callback payload construction, single-step changed-text polling, an explicit low-frequency poll loop, and recent outgoing echo suppression. With `WECHAT_UI_SEND_CURRENT_CHAT=true`, both bridge send and bridge read avoid automatic contact search even if a `filehelper`/`to_wxid` field is provided. A keyboard submission is not accepted as real delivery unless the same text becomes visible in the WeChat UI. On the current Windows WeChat 4.x client, contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path, and message-editor focus can fail from a background bridge process. Reliable group sender extraction from UI text, group `@` detection from UI text, prefix detection from UI text, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.

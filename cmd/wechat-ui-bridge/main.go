@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -74,9 +75,12 @@ type injectCurrentLastTextRequest struct {
 	WechatID    string `json:"wechat_id"`
 	FromWxID    string `json:"from_wxid"`
 	ToWxID      string `json:"to_wxid"`
+	SenderWxID  string `json:"sender_wxid"`
 	Contact     string `json:"contact"`
 	Content     string `json:"content"`
 	PushContent string `json:"push_content"`
+	AtBot       bool   `json:"at_bot"`
+	AtWxID      string `json:"at_wxid"`
 	DedupeKey   string `json:"dedupe_key"`
 	SkipDedupe  bool   `json:"skip_dedupe"`
 }
@@ -86,7 +90,10 @@ type pollCurrentLastTextRequest struct {
 	WechatID    string `json:"wechat_id"`
 	FromWxID    string `json:"from_wxid"`
 	ToWxID      string `json:"to_wxid"`
+	SenderWxID  string `json:"sender_wxid"`
 	Contact     string `json:"contact"`
+	AtBot       bool   `json:"at_bot"`
+	AtWxID      string `json:"at_wxid"`
 	Inject      *bool  `json:"inject"`
 }
 
@@ -95,10 +102,18 @@ type pollLoopStartRequest struct {
 	WechatID        string `json:"wechat_id"`
 	FromWxID        string `json:"from_wxid"`
 	ToWxID          string `json:"to_wxid"`
+	SenderWxID      string `json:"sender_wxid"`
 	Contact         string `json:"contact"`
+	AtBot           bool   `json:"at_bot"`
+	AtWxID          string `json:"at_wxid"`
 	Inject          *bool  `json:"inject"`
 	PrimeOnStart    *bool  `json:"prime_on_start"`
 	IntervalSeconds int    `json:"interval_seconds"`
+}
+
+type syncMessageBuildOptions struct {
+	SenderWxID string
+	AtWxID     string
 }
 
 type scriptOutput struct {
@@ -493,6 +508,7 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		wechatID := firstNonEmpty(req.WechatID, cfg.BotWxID)
 		toWxID := firstNonEmpty(req.ToWxID, cfg.BotWxID)
 		fromWxID := firstNonEmpty(req.FromWxID, req.Contact, "filehelper")
+		atWxID := resolveAtWxID(req.AtWxID, wechatID, req.AtBot)
 		content := strings.TrimSpace(req.Content)
 		contact := strings.TrimSpace(req.Contact)
 		if content == "" {
@@ -520,7 +536,10 @@ func injectCurrentLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeDuplicateInjection(w, dedupeKey, cfg.InjectDedupeTTL)
 			return
 		}
-		payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, req.PushContent, now)
+		payload, msgID := buildSyncMessageCallbackPayloadWithOptions(wechatID, fromWxID, toWxID, content, req.PushContent, now, syncMessageBuildOptions{
+			SenderWxID: req.SenderWxID,
+			AtWxID:     atWxID,
+		})
 		result, err := postSyncMessage(r.Context(), cfg, callbackURL, payload)
 		if err != nil {
 			if !req.SkipDedupe && cfg.InjectDedupeTTL > 0 {
@@ -582,6 +601,7 @@ func pollCurrentLastText(ctx context.Context, cfg bridgeConfig, req pollCurrentL
 	wechatID := firstNonEmpty(req.WechatID, cfg.BotWxID)
 	toWxID := firstNonEmpty(req.ToWxID, cfg.BotWxID)
 	fromWxID := firstNonEmpty(req.FromWxID, req.Contact, "filehelper")
+	atWxID := resolveAtWxID(req.AtWxID, wechatID, req.AtBot)
 	content, contact, err := readVisibleText(ctx, cfg, readLastRequest{
 		Contact: req.Contact,
 		ToWxID:  fromWxID,
@@ -645,7 +665,10 @@ func pollCurrentLastText(ctx context.Context, cfg bridgeConfig, req pollCurrentL
 		base["dedupe_seconds"] = int(cfg.InjectDedupeTTL.Seconds())
 		return base, http.StatusConflict, nil
 	}
-	payload, msgID := buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, "", now)
+	payload, msgID := buildSyncMessageCallbackPayloadWithOptions(wechatID, fromWxID, toWxID, content, "", now, syncMessageBuildOptions{
+		SenderWxID: req.SenderWxID,
+		AtWxID:     atWxID,
+	})
 	postResult, err := postSyncMessage(ctx, cfg, callbackURL, payload)
 	if err != nil {
 		if cfg.InjectDedupeTTL > 0 {
@@ -680,7 +703,10 @@ func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
 			WechatID:    req.WechatID,
 			FromWxID:    req.FromWxID,
 			ToWxID:      req.ToWxID,
+			SenderWxID:  req.SenderWxID,
 			Contact:     req.Contact,
+			AtBot:       req.AtBot,
+			AtWxID:      req.AtWxID,
 			Inject:      req.Inject,
 		}
 		prime := true
@@ -1025,10 +1051,16 @@ func postSyncMessage(parent context.Context, cfg bridgeConfig, callbackURL strin
 }
 
 func buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, pushContent string, now time.Time) (clientResponse, int64) {
+	return buildSyncMessageCallbackPayloadWithOptions(wechatID, fromWxID, toWxID, content, pushContent, now, syncMessageBuildOptions{})
+}
+
+func buildSyncMessageCallbackPayloadWithOptions(wechatID, fromWxID, toWxID, content, pushContent string, now time.Time, opts syncMessageBuildOptions) (clientResponse, int64) {
 	msgID := now.UnixNano() / int64(time.Millisecond)
 	if strings.TrimSpace(pushContent) == "" {
 		pushContent = content
 	}
+	syncContent := buildSyncMessageContent(fromWxID, opts.SenderWxID, content)
+	msgSource := buildMsgSource(opts.AtWxID)
 	return clientResponse{
 		Success: true,
 		Code:    0,
@@ -1040,11 +1072,12 @@ func buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, pushCo
 					NewMsgId:     msgID,
 					FromUserName: robotString(fromWxID),
 					ToUserName:   robotString(toWxID),
-					Content:      robotString(content),
+					Content:      robotString(syncContent),
 					CreateTime:   now.Unix(),
 					MsgType:      model.MsgTypeText,
 					Status:       3,
 					PushContent:  pushContent,
+					MsgSource:    msgSource,
 				},
 			},
 			Status:  1,
@@ -1052,6 +1085,41 @@ func buildSyncMessageCallbackPayload(wechatID, fromWxID, toWxID, content, pushCo
 			Remarks: fmt.Sprintf("wechat-ui injected for %s", wechatID),
 		},
 	}, msgID
+}
+
+func buildSyncMessageContent(fromWxID, senderWxID, content string) string {
+	content = strings.TrimSpace(content)
+	senderWxID = strings.TrimSpace(senderWxID)
+	if strings.HasSuffix(strings.TrimSpace(fromWxID), "@chatroom") && senderWxID != "" {
+		return senderWxID + ":\n" + content
+	}
+	return content
+}
+
+func buildMsgSource(atWxID string) string {
+	atWxID = strings.TrimSpace(atWxID)
+	if atWxID == "" {
+		return ""
+	}
+	return "<msgsource><atuserlist>" + xmlEscapeString(atWxID) + "</atuserlist></msgsource>"
+}
+
+func resolveAtWxID(raw, botWxID string, atBot bool) string {
+	if value := strings.TrimSpace(raw); value != "" {
+		return value
+	}
+	if atBot {
+		return strings.TrimSpace(botWxID)
+	}
+	return ""
+}
+
+func xmlEscapeString(value string) string {
+	var buf bytes.Buffer
+	if err := xml.EscapeText(&buf, []byte(value)); err != nil {
+		return value
+	}
+	return buf.String()
 }
 
 func runScript(parent context.Context, cfg bridgeConfig, args ...string) (scriptOutput, error) {
