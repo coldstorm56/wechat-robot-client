@@ -377,6 +377,90 @@ func TestPollCurrentLastTextHandlerCanObserveWithoutInjecting(t *testing.T) {
 	}
 }
 
+func TestRememberOutgoingMessageStoresRawAndAliasEchoKeys(t *testing.T) {
+	oldOutgoing := outgoingMessages
+	outgoingMessages = newRecentTextStore()
+	defer func() { outgoingMessages = oldOutgoing }()
+
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	cfg := bridgeConfig{
+		BotWxID:         "wechat_ui_bot",
+		ContactAliases:  parseAliases("filehelper=文件传输助手"),
+		OutgoingEchoTTL: time.Minute,
+	}
+	rememberOutgoingMessage(cfg, "filehelper", "hello echo", now)
+
+	for _, fromWxID := range []string{"filehelper", "文件传输助手"} {
+		key := buildOutgoingEchoKey("wechat_ui_bot", fromWxID, "wechat_ui_bot", "hello echo")
+		if !outgoingMessages.Seen(key, now.Add(30*time.Second)) {
+			t.Fatalf("expected outgoing echo key for %q", fromWxID)
+		}
+	}
+	for _, fromWxID := range []string{"filehelper", "文件传输助手"} {
+		key := buildOutgoingEchoKey("wechat_ui_bot", fromWxID, "wechat_ui_bot", "hello echo")
+		if outgoingMessages.Seen(key, now.Add(61*time.Second)) {
+			t.Fatalf("expected outgoing echo key for %q to expire", fromWxID)
+		}
+	}
+}
+
+func TestPollCurrentLastTextHandlerSuppressesOutgoingEcho(t *testing.T) {
+	oldOutgoing := outgoingMessages
+	oldPolled := polledMessages
+	oldReader := readVisibleText
+	outgoingMessages = newRecentTextStore()
+	polledMessages = newLastTextStore()
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "bot reply", "", nil
+	}
+	defer func() {
+		outgoingMessages = oldOutgoing
+		polledMessages = oldPolled
+		readVisibleText = oldReader
+	}()
+
+	cfg := bridgeConfig{
+		BotWxID:         "wechat_ui_bot",
+		Timeout:         time.Second,
+		OutgoingEchoTTL: time.Minute,
+	}
+	rememberOutgoingMessage(cfg, "filehelper", "bot reply", time.Now())
+
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("callback should not be called for outgoing echo")
+	}))
+	defer callback.Close()
+	cfg.AssistantSyncURL = callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message"
+
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollCurrentLastText", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+	pollCurrentLastTextHandler(cfg)(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var body clientResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	data := body.Data.(map[string]any)
+	if data["skipped"] != true || data["reason"] != "outgoing echo" || data["injected"] != false {
+		t.Fatalf("data=%#v", data)
+	}
+
+	resp = httptest.NewRecorder()
+	pollCurrentLastTextHandler(cfg)(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	data = body.Data.(map[string]any)
+	if data["changed"] != false {
+		t.Fatalf("second data=%#v", data)
+	}
+}
+
 func TestNormalizePollInterval(t *testing.T) {
 	for seconds, want := range map[int]time.Duration{
 		0:  60 * time.Second,

@@ -40,6 +40,7 @@ type bridgeConfig struct {
 	OperatorPauseFile    string
 	AssistantSyncURL     string
 	InjectDedupeTTL      time.Duration
+	OutgoingEchoTTL      time.Duration
 }
 
 type clientResponse struct {
@@ -134,6 +135,7 @@ type operatorPauseRequest struct {
 var (
 	injectedMessages = newDedupeStore()
 	polledMessages   = newLastTextStore()
+	outgoingMessages = newRecentTextStore()
 	readVisibleText  = readCurrentLastText
 	backgroundPoller = newPollRunner()
 )
@@ -189,6 +191,7 @@ func loadConfig() bridgeConfig {
 	pauseFile := flag.String("operator-pause-file", envString("WECHAT_UI_OPERATOR_PAUSE_FILE", filepath.Join(os.TempDir(), "wechat-ui-operator-pause.json")), "optional local file for dynamic operator takeover pauses")
 	assistantSyncURL := flag.String("assistant-sync-url", envString("WECHAT_UI_ASSISTANT_SYNC_URL", ""), "optional loopback main-service sync-message callback URL")
 	injectDedupeSeconds := flag.Int("inject-dedupe-seconds", envInt("WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS", 120), "suppress duplicate injected visible messages for this many seconds")
+	outgoingEchoSeconds := flag.Int("outgoing-echo-seconds", envInt("WECHAT_UI_OUTGOING_ECHO_TTL_SECONDS", 300), "suppress poll injection for recently sent visible text for this many seconds")
 	flag.Parse()
 
 	return bridgeConfig{
@@ -207,6 +210,7 @@ func loadConfig() bridgeConfig {
 		OperatorPauseFile:    strings.TrimSpace(*pauseFile),
 		AssistantSyncURL:     strings.TrimSpace(*assistantSyncURL),
 		InjectDedupeTTL:      time.Duration(*injectDedupeSeconds) * time.Second,
+		OutgoingEchoTTL:      time.Duration(*outgoingEchoSeconds) * time.Second,
 	}
 }
 
@@ -228,6 +232,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"operator_pause_windows": cfg.OperatorPauseWindows,
 			"assistant_sync_url":     cfg.AssistantSyncURL,
 			"inject_dedupe_seconds":  int(cfg.InjectDedupeTTL.Seconds()),
+			"outgoing_echo_seconds":  int(cfg.OutgoingEchoTTL.Seconds()),
 			"poll_loop":              backgroundPoller.Status(),
 		})
 	}
@@ -415,6 +420,7 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 		}
 
 		now := time.Now().Unix()
+		rememberOutgoingMessage(cfg, req.ToWxID, req.Content, time.Now())
 		writeClientOK(w, map[string]any{
 			"BaseResponse": map[string]any{"ret": 0},
 			"List": []map[string]any{
@@ -603,6 +609,14 @@ func pollCurrentLastText(ctx context.Context, cfg bridgeConfig, req pollCurrentL
 		base["injected"] = false
 		return base, status, nil
 	}
+	if outgoingMessages.Seen(buildOutgoingEchoKey(wechatID, fromWxID, toWxID, content), time.Now()) {
+		polledMessages.Remember(streamKey, content)
+		base["changed"] = true
+		base["injected"] = false
+		base["skipped"] = true
+		base["reason"] = "outgoing echo"
+		return base, status, nil
+	}
 	shouldInject := true
 	if req.Inject != nil {
 		shouldInject = *req.Inject
@@ -732,6 +746,11 @@ type lastTextStore struct {
 	values map[string]string
 }
 
+type recentTextStore struct {
+	mu      sync.Mutex
+	expires map[string]time.Time
+}
+
 type pollRunner struct {
 	mu        sync.Mutex
 	cancel    context.CancelFunc
@@ -750,6 +769,10 @@ func newDedupeStore() *dedupeStore {
 
 func newLastTextStore() *lastTextStore {
 	return &lastTextStore{values: map[string]string{}}
+}
+
+func newRecentTextStore() *recentTextStore {
+	return &recentTextStore{expires: map[string]time.Time{}}
 }
 
 func newPollRunner() *pollRunner {
@@ -889,12 +912,51 @@ func (s *lastTextStore) Remember(key, value string) {
 	s.values[key] = value
 }
 
+func (s *recentTextStore) Remember(key string, now time.Time, ttl time.Duration) {
+	if key == "" || ttl <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expires[key] = now.Add(ttl)
+}
+
+func (s *recentTextStore) Seen(key string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for seenKey, expiresAt := range s.expires {
+		if !expiresAt.After(now) {
+			delete(s.expires, seenKey)
+		}
+	}
+	expiresAt, ok := s.expires[key]
+	return ok && expiresAt.After(now)
+}
+
+func rememberOutgoingMessage(cfg bridgeConfig, toWxID, content string, now time.Time) {
+	content = strings.TrimSpace(content)
+	if cfg.OutgoingEchoTTL <= 0 || content == "" {
+		return
+	}
+	for _, fromWxID := range uniqueNonEmpty(toWxID, contactName(cfg, toWxID)) {
+		outgoingMessages.Remember(
+			buildOutgoingEchoKey(cfg.BotWxID, fromWxID, cfg.BotWxID, content),
+			now,
+			cfg.OutgoingEchoTTL,
+		)
+	}
+}
+
 func buildPollStreamKey(wechatID, fromWxID, toWxID string) string {
 	return strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(wechatID)),
 		strings.ToLower(strings.TrimSpace(fromWxID)),
 		strings.ToLower(strings.TrimSpace(toWxID)),
 	}, "\x00")
+}
+
+func buildOutgoingEchoKey(wechatID, fromWxID, toWxID, content string) string {
+	return buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content)
 }
 
 func buildInjectionDedupeKey(wechatID, fromWxID, toWxID, content string) string {
@@ -1344,6 +1406,24 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func uniqueNonEmpty(values ...string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func splitComma(value string) []string {
