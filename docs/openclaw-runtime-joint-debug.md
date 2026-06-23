@@ -195,6 +195,20 @@ Safety notes:
 
 Start the local compatibility bridge:
 
+For a repeatable PowerShell entrypoint that avoids Chinese text encoding drift in Windows PowerShell 5, use:
+
+```powershell
+.\scripts\wechat_ui_bridge_run.ps1 -PauseWindows "12:00-13:30,19:00-22:00"
+```
+
+To preview the bridge configuration without starting the process:
+
+```powershell
+.\scripts\wechat_ui_bridge_run.ps1 -NoStart
+```
+
+The summary prints the matching main-service setting, for example `WECHAT_SERVER_HOST=127.0.0.1:3021`. Use `-MinWindowWidth`/`-MinWindowHeight` if you intentionally change the minimum visible WeChat window threshold, and use `-PauseWindows` for daily human takeover windows.
+
 ```powershell
 $env:WECHAT_UI_BRIDGE_ADDR='127.0.0.1:3021'
 $env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
