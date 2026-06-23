@@ -249,6 +249,31 @@ class LocalDBPatch:
             flush=True,
         )
 
+    def verify_session_log(self) -> dict[str, Any]:
+        raw = self.mysql(
+            "SELECT JSON_OBJECT("
+            "'status', status, "
+            "'reply_text', COALESCE(reply_text,''), "
+            "'error_message', COALESCE(error_message,''), "
+            "'request_text', COALESCE(request_text,''), "
+            "'openclaw_url', COALESCE(openclaw_url,'')) "
+            f"FROM {quote_ident(self.args.robot_db)}.assistant_session_logs "
+            f"WHERE request_text={sql_string(self.args.content)} "
+            "ORDER BY id DESC LIMIT 1;"
+        )
+        if not raw:
+            raise RuntimeError("assistant_session_logs did not contain a row for the injected request_text")
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"assistant_session_logs verification returned invalid JSON: {raw}") from exc
+        if row.get("status") != "success":
+            raise RuntimeError(f"assistant_session_logs status was not success: {row}")
+        if self.args.reply not in str(row.get("reply_text", "")):
+            raise RuntimeError(f"assistant_session_logs reply_text did not contain expected reply: {row}")
+        print(json.dumps({"assistant_session_log": "verified", "row": row}, ensure_ascii=False), flush=True)
+        return row
+
 
 def quote_ident(value: str) -> str:
     if not value.replace("_", "").isalnum():
@@ -537,6 +562,12 @@ def main() -> int:
     parser.add_argument("--main-log", default="")
     parser.add_argument("--go-env", default="dev")
     parser.add_argument("--prepare-local-db", action="store_true")
+    parser.add_argument(
+        "--verify-session-log",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="when --prepare-local-db is active, verify assistant_session_logs before cleanup",
+    )
     parser.add_argument("--mysql-container", default="wechat-admin-mysql")
     parser.add_argument("--mysql-user", default="root")
     parser.add_argument("--mysql-password", default="mroot12345678")
@@ -605,7 +636,10 @@ def main() -> int:
         if args.inject_delay_seconds > 0:
             print(f"Waiting {args.inject_delay_seconds} seconds before injection.", file=sys.stderr)
             time.sleep(args.inject_delay_seconds)
-        return run_smoke(args, recorder, args.main_url)
+        exit_code = run_smoke(args, recorder, args.main_url)
+        if exit_code == 0 and args.verify_session_log and db_patch is not None:
+            db_patch.verify_session_log()
+        return exit_code
     finally:
         if main_process is not None:
             stop_process_tree(main_process)
