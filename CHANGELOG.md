@@ -24,6 +24,7 @@
 - Runtime safety: validate injecting poll-loop callback configuration before startup, while still allowing observe-only polling without a callback.
 - Runtime safety: stop the WeChat UI poll loop after consecutive read/inject errors by default, reducing repeated focus/OCR attempts during window-size or operator handoff conflicts.
 - Runtime safety: detect known blocking system dialogs over the WeChat window and fail closed before OCR/send; document resizable WeChat window guidance and operator takeover windows.
+- Protocol bridge: normalize `/api/Operator/UiStatus` with `blocked`, `usable`, and `unusable_reason` fields so callers can avoid UI automation while WeChat is covered or on the wrong chat.
 - Runtime validation: add a local assistant-flow E2E harness with mock OpenClaw and mock WeChat bridge endpoints to verify the 9001 `sync-message` to `/Msg/SendTxt` path before real WeChat UI acceptance.
 - Runtime validation: let the assistant-flow E2E harness start an isolated temporary main service and report callback/preflight diagnostics when active robot wxid or AI enablement prerequisites are not satisfied.
 - Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.

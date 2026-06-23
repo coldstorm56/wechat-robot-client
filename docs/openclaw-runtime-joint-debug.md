@@ -274,6 +274,12 @@ POST /api/Operator/PollStop
 POST /api/Operator/PollStatus
 ```
 
+`UiStatus` keeps the raw visible-window fields from the Python smoke script and adds bridge-level readiness fields:
+
+- `blocked=true` means a known blocking window is covering WeChat, such as a Windows security/firewall prompt.
+- `usable=false` means the bridge should not send/read yet. `unusable_reason` can be `blocking_window`, `unexpected_chat_title`, or `not_foreground`.
+- `blocking_windows` is preserved so the operator can see which local window needs manual handling.
+
 Dry-run the bridge without touching the WeChat UI:
 
 ```powershell

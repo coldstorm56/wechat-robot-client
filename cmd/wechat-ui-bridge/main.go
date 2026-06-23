@@ -333,7 +333,7 @@ func uiStatusHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeClientError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		writeClientOK(w, output.Status)
+		writeClientOK(w, normalizeUIStatus(output.Status))
 	}
 }
 
@@ -802,6 +802,7 @@ type recentTextStore struct {
 type pollRunner struct {
 	mu         sync.Mutex
 	cancel     context.CancelFunc
+	done       chan struct{}
 	running    bool
 	interval   time.Duration
 	request    pollCurrentLastTextRequest
@@ -875,7 +876,9 @@ func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, int
 		maxErrors = 0
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	p.cancel = cancel
+	p.done = done
 	p.running = true
 	p.interval = interval
 	p.request = req
@@ -886,18 +889,29 @@ func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, int
 	p.maxErrors = maxErrors
 	p.errorCount = 0
 	p.stopReason = ""
-	go p.loop(ctx, cfg, req, interval, prime)
+	go func() {
+		defer close(done)
+		p.loop(ctx, cfg, req, interval, prime)
+	}()
 	return nil
 }
 
 func (p *pollRunner) Stop() {
-	p.stopWithReason("")
+	done := p.stopWithReason("")
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
-func (p *pollRunner) stopWithReason(reason string) {
+func (p *pollRunner) stopWithReason(reason string) chan struct{} {
 	p.mu.Lock()
 	cancel := p.cancel
+	done := p.done
 	p.cancel = nil
+	p.done = nil
 	p.running = false
 	if strings.TrimSpace(reason) != "" {
 		p.stopReason = strings.TrimSpace(reason)
@@ -906,6 +920,7 @@ func (p *pollRunner) stopWithReason(reason string) {
 	if cancel != nil {
 		cancel()
 	}
+	return done
 }
 
 func (p *pollRunner) Status() map[string]any {
@@ -1211,6 +1226,38 @@ func runScript(parent context.Context, cfg bridgeConfig, args ...string) (script
 		return parsed, errors.New(parsed.Error)
 	}
 	return parsed, nil
+}
+
+func normalizeUIStatus(status any) map[string]any {
+	result := map[string]any{
+		"blocked": false,
+		"usable":  true,
+	}
+	statusMap, ok := status.(map[string]any)
+	if !ok {
+		result["status"] = status
+		return result
+	}
+	for key, value := range statusMap {
+		result[key] = value
+	}
+
+	if blockers, ok := statusMap["blocking_windows"].([]any); ok && len(blockers) > 0 {
+		result["blocked"] = true
+		result["usable"] = false
+		result["unusable_reason"] = "blocking_window"
+		return result
+	}
+	if titleMatch, ok := statusMap["title_match"].(bool); ok && !titleMatch {
+		result["usable"] = false
+		result["unusable_reason"] = "unexpected_chat_title"
+		return result
+	}
+	if foreground, ok := statusMap["foreground"].(bool); ok && !foreground {
+		result["usable"] = false
+		result["unusable_reason"] = "not_foreground"
+	}
+	return result
 }
 
 func allowAutomationNow(w http.ResponseWriter, cfg bridgeConfig) bool {

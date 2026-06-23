@@ -57,6 +57,51 @@ func TestEnsureLoopbackURL(t *testing.T) {
 	}
 }
 
+func TestNormalizeUIStatusReportsBlockingWindows(t *testing.T) {
+	status := normalizeUIStatus(map[string]any{
+		"foreground":  false,
+		"title_match": false,
+		"blocking_windows": []any{
+			map[string]any{"name": "Windows 安全中心警报"},
+		},
+	})
+
+	if status["blocked"] != true || status["usable"] != false {
+		t.Fatalf("status=%#v", status)
+	}
+	if got := status["unusable_reason"]; got != "blocking_window" {
+		t.Fatalf("unusable_reason=%#v", got)
+	}
+	if _, ok := status["blocking_windows"]; !ok {
+		t.Fatalf("expected original blocking_windows to be preserved: %#v", status)
+	}
+}
+
+func TestNormalizeUIStatusReportsUnexpectedChatTitle(t *testing.T) {
+	status := normalizeUIStatus(map[string]any{
+		"foreground":        true,
+		"title_match":       false,
+		"blocking_windows":  []any{},
+		"chat_text_sample":  []any{"Service Accounts"},
+		"expected_chat_key": "文件传输助手",
+	})
+
+	if status["blocked"] != false || status["usable"] != false {
+		t.Fatalf("status=%#v", status)
+	}
+	if got := status["unusable_reason"]; got != "unexpected_chat_title" {
+		t.Fatalf("unusable_reason=%#v", got)
+	}
+}
+
+func TestNormalizeUIStatusPreservesUnknownShape(t *testing.T) {
+	status := normalizeUIStatus("raw")
+
+	if status["blocked"] != false || status["usable"] != true || status["status"] != "raw" {
+		t.Fatalf("status=%#v", status)
+	}
+}
+
 func TestSplitComma(t *testing.T) {
 	got := splitComma("a, b,,c ")
 	want := []string{"a", "b", "c"}
