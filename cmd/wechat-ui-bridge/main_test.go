@@ -95,6 +95,27 @@ func TestNormalizeUIStatusReportsUnexpectedChatTitle(t *testing.T) {
 	}
 }
 
+func TestNormalizeUIStatusReportsSmallWindow(t *testing.T) {
+	status := normalizeUIStatus(map[string]any{
+		"foreground":        true,
+		"title_match":       true,
+		"blocking_windows":  []any{},
+		"window_width":      float64(520),
+		"window_height":     float64(420),
+		"min_window_width":  float64(640),
+		"min_window_height": float64(480),
+		"window_size_ok":    false,
+		"chat_text_sample":  []any{},
+	})
+
+	if status["blocked"] != false || status["usable"] != false {
+		t.Fatalf("status=%#v", status)
+	}
+	if got := status["unusable_reason"]; got != "window_too_small" {
+		t.Fatalf("unusable_reason=%#v", got)
+	}
+}
+
 func TestNormalizeUIStatusPreservesUnknownShape(t *testing.T) {
 	status := normalizeUIStatus("raw")
 

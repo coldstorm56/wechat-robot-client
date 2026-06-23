@@ -45,6 +45,8 @@ except ImportError as exc:  # pragma: no cover - host dependency preflight
 
 DEFAULT_WECHAT_EXE = r"D:\software\Weixin\Weixin.exe"
 DEFAULT_CONTACT = "\u6587\u4ef6\u4f20\u8f93\u52a9\u624b"
+DEFAULT_MIN_WINDOW_WIDTH = 640
+DEFAULT_MIN_WINDOW_HEIGHT = 480
 
 
 @dataclass
@@ -59,6 +61,11 @@ class WindowInfo:
 @dataclass
 class UIStatus:
     window: WindowInfo
+    window_width: int
+    window_height: int
+    min_window_width: int
+    min_window_height: int
+    window_size_ok: bool
     title_text: str
     title_match: bool | None
     chat_text_sample: list[str]
@@ -83,6 +90,17 @@ def configure_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+
+
+def env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning("invalid integer environment value %s=%r; using %s", name, raw, default)
+        return default
 
 
 def json_print(payload: dict) -> None:
@@ -210,9 +228,9 @@ def find_wechat_window(timeout: float, launch: bool, exe_path: str) -> auto.Cont
     raise TimeoutError("WeChat 4.x window was not found")
 
 
-def activate(ctrl: auto.Control) -> None:
+def activate(ctrl: auto.Control, min_width: int, min_height: int) -> None:
     restore_control_window(ctrl)
-    ensure_usable_chat_window(ctrl)
+    ensure_usable_chat_window(ctrl, min_width, min_height)
     ctrl.SetActive()
     time.sleep(0.5)
 
@@ -270,15 +288,24 @@ def force_foreground_window(hwnd: int) -> None:
     time.sleep(0.3)
 
 
-def ensure_usable_chat_window(ctrl: auto.Control) -> None:
+def window_dimensions(ctrl: auto.Control) -> tuple[int, int]:
     left, top, right, bottom = window_rect(ctrl)
-    width = right - left
-    height = bottom - top
+    return right - left, bottom - top
+
+
+def ensure_usable_chat_window(ctrl: auto.Control, min_width: int, min_height: int) -> None:
+    width, height = window_dimensions(ctrl)
     class_name = (ctrl.ClassName or "").lower()
-    if width < 200 or height < 200 or "login" in class_name:
+    if "login" in class_name:
         raise RuntimeError(
             "WeChat was found, but it is not a usable chat window. "
             "Log in to WeChat 4.x and open the main chat window first."
+        )
+    if width < min_width or height < min_height:
+        raise RuntimeError(
+            "WeChat was found, but the window is too small for reliable UI automation. "
+            f"Current size is {width}x{height}; minimum is {min_width}x{min_height}. "
+            "Resize the main chat window and try again."
         )
 
 
@@ -381,8 +408,8 @@ def paste_text(text: str) -> None:
     time.sleep(0.2)
 
 
-def open_contact(ctrl: auto.Control, contact: str) -> None:
-    activate(ctrl)
+def open_contact(ctrl: auto.Control, contact: str, min_width: int, min_height: int) -> None:
+    activate(ctrl, min_width, min_height)
     auto.SendKeys("{Ctrl}f", waitTime=0.05)
     time.sleep(0.2)
     paste_text(contact)
@@ -398,11 +425,13 @@ def send_text(
     expected_title: str,
     verify_editor: bool,
     editor_verify_timeout: float,
+    min_width: int,
+    min_height: int,
 ) -> str:
     if contact:
-        open_contact(ctrl, contact)
+        open_contact(ctrl, contact, min_width, min_height)
     else:
-        activate(ctrl)
+        activate(ctrl, min_width, min_height)
     if expected_title:
         verify_conversation_title(ctrl, expected_title)
     click_message_input(ctrl)
@@ -451,12 +480,19 @@ def verify_visible_message(ctrl: auto.Control, expected: str, timeout: float) ->
     raise RuntimeError(f"message submission attempted but visible delivery was not verified: {last_error}")
 
 
-def verify_last_visible_message(ctrl: auto.Control, expected: str, expected_title: str | None, timeout: float) -> str:
+def verify_last_visible_message(
+    ctrl: auto.Control,
+    expected: str,
+    expected_title: str | None,
+    timeout: float,
+    min_width: int,
+    min_height: int,
+) -> str:
     deadline = time.time() + timeout
     last_error = ""
     while time.time() < deadline:
         try:
-            last_text = read_last_text(ctrl, "", expected_title)
+            last_text = read_last_text(ctrl, "", expected_title, min_width, min_height)
             if contains_normalized(last_text, expected):
                 return last_text
             last_error = f"last visible message did not match submitted text: {last_text!r}"
@@ -482,17 +518,42 @@ def verify_conversation_title(ctrl: auto.Control, expected: str) -> str:
     raise RuntimeError(f"current WeChat conversation title did not match {expected!r}: {text!r}")
 
 
-def read_ui_status(ctrl: auto.Control, expected_title: str | None) -> UIStatus:
-    activate(ctrl)
+def read_ui_status(ctrl: auto.Control, expected_title: str | None, min_width: int, min_height: int) -> UIStatus:
+    restore_control_window(ctrl)
+    width, height = window_dimensions(ctrl)
+    window_size_ok = width >= min_width and height >= min_height
+    with contextlib.suppress(Exception):
+        ctrl.SetActive()
+    time.sleep(0.5)
     blockers = blocking_window_infos(ctrl)
     if blockers:
         return UIStatus(
             window=describe_window(ctrl),
+            window_width=width,
+            window_height=height,
+            min_window_width=min_width,
+            min_window_height=min_height,
+            window_size_ok=window_size_ok,
             title_text="",
             title_match=False if expected_title else None,
             chat_text_sample=[],
             blocking_windows=blockers,
             foreground=False,
+        )
+    if not window_size_ok:
+        hwnd = int(ctrl.NativeWindowHandle or 0)
+        return UIStatus(
+            window=describe_window(ctrl),
+            window_width=width,
+            window_height=height,
+            min_window_width=min_width,
+            min_window_height=min_height,
+            window_size_ok=False,
+            title_text="",
+            title_match=False if expected_title else None,
+            chat_text_sample=[],
+            blocking_windows=[],
+            foreground=bool(hwnd and win32gui.GetForegroundWindow() == hwnd),
         )
     title_texts = ocr_title_texts(ctrl)
     title_text = "\n".join(title_texts)
@@ -505,6 +566,11 @@ def read_ui_status(ctrl: auto.Control, expected_title: str | None) -> UIStatus:
     hwnd = int(ctrl.NativeWindowHandle or 0)
     return UIStatus(
         window=describe_window(ctrl),
+        window_width=width,
+        window_height=height,
+        min_window_width=min_width,
+        min_window_height=min_height,
+        window_size_ok=window_size_ok,
         title_text=title_text,
         title_match=title_match,
         chat_text_sample=chat_texts,
@@ -615,10 +681,16 @@ def collect_texts_deep(ctrl: auto.Control, remaining: int) -> list[str]:
     return values
 
 
-def read_last_text(ctrl: auto.Control, contact: str | None, expected_title: str) -> str:
+def read_last_text(
+    ctrl: auto.Control,
+    contact: str | None,
+    expected_title: str,
+    min_width: int,
+    min_height: int,
+) -> str:
     if contact:
-        open_contact(ctrl, contact)
-    activate(ctrl)
+        open_contact(ctrl, contact, min_width, min_height)
+    activate(ctrl, min_width, min_height)
     if expected_title:
         verify_conversation_title(ctrl, expected_title)
     texts = [text for text in ocr_chat_texts(ctrl) if text.strip()]
@@ -679,7 +751,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     with preserved_desktop_state(restore_window=not args.keep_focus):
         window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
-        status = read_ui_status(window, args.expect_title)
+        status = read_ui_status(window, args.expect_title, args.min_window_width, args.min_window_height)
     json_print(
         {
             "ok": True,
@@ -700,13 +772,22 @@ def cmd_send(args: argparse.Namespace) -> int:
             args.expect_title,
             args.verify_editor,
             args.editor_verify_timeout,
+            args.min_window_width,
+            args.min_window_height,
         )
         verified_text = ""
         last_text = ""
         if args.verify:
             verified_text = verify_visible_message(window, args.message, args.verify_timeout)
             if args.verify_last:
-                last_text = verify_last_visible_message(window, args.message, args.expect_title, args.verify_timeout)
+                last_text = verify_last_visible_message(
+                    window,
+                    args.message,
+                    args.expect_title,
+                    args.verify_timeout,
+                    args.min_window_width,
+                    args.min_window_height,
+                )
     json_print(
         {
             "ok": True,
@@ -726,7 +807,7 @@ def cmd_send(args: argparse.Namespace) -> int:
 def cmd_read_last(args: argparse.Namespace) -> int:
     with preserved_desktop_state(restore_window=not args.keep_focus):
         window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
-        text = read_last_text(window, args.contact, args.expect_title)
+        text = read_last_text(window, args.contact, args.expect_title, args.min_window_width, args.min_window_height)
     json_print({"ok": True, "contact": args.contact, "last_text": text})
     return 0
 
@@ -737,6 +818,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=8)
     parser.add_argument("--launch", action="store_true", help="start WeChat when no window is found")
     parser.add_argument("--keep-focus", action="store_true", help="leave WeChat focused after the action")
+    parser.add_argument(
+        "--min-window-width",
+        type=int,
+        default=env_int("WECHAT_UI_MIN_WINDOW_WIDTH", DEFAULT_MIN_WINDOW_WIDTH),
+        help="minimum visible WeChat window width required for reliable UI automation",
+    )
+    parser.add_argument(
+        "--min-window-height",
+        type=int,
+        default=env_int("WECHAT_UI_MIN_WINDOW_HEIGHT", DEFAULT_MIN_WINDOW_HEIGHT),
+        help="minimum visible WeChat window height required for reliable UI automation",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     inspect = sub.add_parser("inspect", help="list detected WeChat UIA windows")

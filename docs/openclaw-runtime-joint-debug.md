@@ -180,7 +180,7 @@ OCR notes:
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
 - If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
 - If a send attempt reports `ok=true`, verify `last_text_status=last_visible_verified` and inspect `last_text`; this is stricter than merely seeing the submitted text somewhere in the chat area.
-- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden. Resizing is safe as long as the current chat title, message area, and editor remain visible. Before enabling polling, choose a comfortable stable size; the bridge does not require a fixed pixel size, but it will fail closed when the resized window no longer exposes enough readable UI.
+- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden. Resizing is safe as long as the current chat title, message area, and editor remain visible. Before enabling polling, choose a comfortable stable size. The bridge does not require a fixed pixel size, but it requires a minimum visible window size and fails closed when the resized window is too small.
 - For current-chat mode, set an expected visible chat title such as `文件传输助手`; the bridge will fail before touching the editor when WeChat is on a different surface such as Service Accounts, Contacts, or search results.
 - If `status` returns `blocking_windows`, a known system dialog or other blocking window is covering WeChat. Close or handle that dialog manually first; the bridge should not click through security prompts or report OCR/send success while the WeChat surface is blocked.
 
@@ -203,6 +203,8 @@ $env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
 $env:WECHAT_UI_SEND_CURRENT_CHAT='true'
 $env:WECHAT_UI_SEND_REQUIRE_VERIFY='true'
 $env:WECHAT_UI_EXPECT_CHAT_TITLE='文件传输助手'
+$env:WECHAT_UI_MIN_WINDOW_WIDTH='640'
+$env:WECHAT_UI_MIN_WINDOW_HEIGHT='480'
 $env:WECHAT_UI_OPERATOR_PAUSE_WINDOWS='12:00-13:30,19:00-22:00'
 $env:WECHAT_UI_OPERATOR_PAUSE_FILE="$env:TEMP\wechat-ui-operator-pause.json"
 $env:WECHAT_UI_ASSISTANT_SYNC_URL='http://127.0.0.1:9001/api/v1/wechat-client/wechat_ui_bot/sync-message'
@@ -303,7 +305,8 @@ POST /api/Operator/PollStatus
 `UiStatus` keeps the raw visible-window fields from the Python smoke script and adds bridge-level readiness fields:
 
 - `blocked=true` means a known blocking window is covering WeChat, such as a Windows security/firewall prompt.
-- `usable=false` means the bridge should not send/read yet. `unusable_reason` can be `blocking_window`, `unexpected_chat_title`, or `not_foreground`.
+- `window_size_ok=false` means the WeChat window is smaller than `WECHAT_UI_MIN_WINDOW_WIDTH`/`WECHAT_UI_MIN_WINDOW_HEIGHT`. Resize it or lower those thresholds only for controlled debugging.
+- `usable=false` means the bridge should not send/read yet. `unusable_reason` can be `blocking_window`, `window_too_small`, `unexpected_chat_title`, or `not_foreground`.
 - `blocking_windows` is preserved so the operator can see which local window needs manual handling.
 
 Use `UiStatus` as the explicit operator/runtime preflight before enabling a poll loop or a real send smoke.

@@ -37,6 +37,8 @@ type bridgeConfig struct {
 	SendCurrent          bool
 	RequireVerify        bool
 	ExpectChatTitle      string
+	MinWindowWidth       int
+	MinWindowHeight      int
 	OperatorPauseWindows string
 	OperatorPauseFile    string
 	AssistantSyncURL     string
@@ -220,6 +222,8 @@ func loadConfig() bridgeConfig {
 	sendCurrent := flag.Bool("send-current", envBool("WECHAT_UI_SEND_CURRENT_CHAT", true), "send to the currently open WeChat conversation instead of navigating by contact")
 	requireVerify := flag.Bool("require-verify", envBool("WECHAT_UI_SEND_REQUIRE_VERIFY", true), "require visible message verification before reporting send success")
 	expectChatTitle := flag.String("expect-chat-title", envString("WECHAT_UI_EXPECT_CHAT_TITLE", ""), "optional current chat title that must be visible before send/read automation runs")
+	minWindowWidth := flag.Int("min-window-width", envInt("WECHAT_UI_MIN_WINDOW_WIDTH", 640), "minimum visible WeChat window width required for UI automation")
+	minWindowHeight := flag.Int("min-window-height", envInt("WECHAT_UI_MIN_WINDOW_HEIGHT", 480), "minimum visible WeChat window height required for UI automation")
 	pauseWindows := flag.String("operator-pause-windows", envString("WECHAT_UI_OPERATOR_PAUSE_WINDOWS", ""), "daily operator takeover windows, e.g. 09:00-12:00,18:30-20:00")
 	pauseFile := flag.String("operator-pause-file", envString("WECHAT_UI_OPERATOR_PAUSE_FILE", filepath.Join(os.TempDir(), "wechat-ui-operator-pause.json")), "optional local file for dynamic operator takeover pauses")
 	assistantSyncURL := flag.String("assistant-sync-url", envString("WECHAT_UI_ASSISTANT_SYNC_URL", ""), "optional loopback main-service sync-message callback URL")
@@ -244,6 +248,8 @@ func loadConfig() bridgeConfig {
 		SendCurrent:          *sendCurrent,
 		RequireVerify:        *requireVerify,
 		ExpectChatTitle:      strings.TrimSpace(*expectChatTitle),
+		MinWindowWidth:       nonNegativeInt(*minWindowWidth),
+		MinWindowHeight:      nonNegativeInt(*minWindowHeight),
 		OperatorPauseWindows: strings.TrimSpace(*pauseWindows),
 		OperatorPauseFile:    strings.TrimSpace(*pauseFile),
 		AssistantSyncURL:     strings.TrimSpace(*assistantSyncURL),
@@ -265,6 +271,8 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"send_current_chat":      cfg.SendCurrent,
 			"require_verify":         cfg.RequireVerify,
 			"expect_chat_title":      cfg.ExpectChatTitle,
+			"min_window_width":       cfg.MinWindowWidth,
+			"min_window_height":      cfg.MinWindowHeight,
 			"operator_pause":         pause.Paused,
 			"operator_pause_state":   pause,
 			"operator_pause_file":    cfg.OperatorPauseFile,
@@ -1278,7 +1286,12 @@ func runScript(parent context.Context, cfg bridgeConfig, args ...string) (script
 	ctx, cancel := context.WithTimeout(parent, cfg.Timeout+2*time.Second)
 	defer cancel()
 
-	fullArgs := []string{cfg.Script, "--timeout", strconv.Itoa(int(cfg.Timeout.Seconds()))}
+	fullArgs := []string{
+		cfg.Script,
+		"--timeout", strconv.Itoa(int(cfg.Timeout.Seconds())),
+		"--min-window-width", strconv.Itoa(cfg.MinWindowWidth),
+		"--min-window-height", strconv.Itoa(cfg.MinWindowHeight),
+	}
 	fullArgs = append(fullArgs, args...)
 	cmd := exec.CommandContext(ctx, cfg.Python, fullArgs...)
 	output, err := cmd.CombinedOutput()
@@ -1320,6 +1333,11 @@ func normalizeUIStatus(status any) map[string]any {
 		result["blocked"] = true
 		result["usable"] = false
 		result["unusable_reason"] = "blocking_window"
+		return result
+	}
+	if windowSizeOK, ok := statusMap["window_size_ok"].(bool); ok && !windowSizeOK {
+		result["usable"] = false
+		result["unusable_reason"] = "window_too_small"
 		return result
 	}
 	if titleMatch, ok := statusMap["title_match"].(bool); ok && !titleMatch {
@@ -1750,6 +1768,13 @@ func envInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return parsed
+}
+
+func nonNegativeInt(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func envBool(key string, defaultValue bool) bool {
