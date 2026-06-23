@@ -10,6 +10,7 @@
 - Protocol bridge: keep current-chat read mode aligned with current-chat send mode so bridge smoke checks do not enter WeChat 4.x contact search by default.
 - Runtime safety: document WeChat 4.x MMUI input-focus risk; bridge send attempts fail closed when visible OCR delivery cannot prove the message was sent.
 - Runtime safety: add operator takeover pause windows and a local dynamic pause file so the WeChat UI bridge can avoid send/read automation during human handoff periods.
+- Runtime tooling: add a PowerShell helper for setting, checking, and clearing WeChat UI operator takeover pauses through the bridge API or local pause file.
 - Runtime safety: verify the message editor draft before pressing Enter, so WeChat UI send attempts fail closed before submission when the MMUI editor cannot be focused.
 - Runtime safety: add an expected chat-title guard so current-chat send/read automation refuses to run on the wrong WeChat surface.
 - Protocol bridge: expose a read-only WeChat UI status endpoint with OCR title and title-match state for operator/runtime readiness checks.

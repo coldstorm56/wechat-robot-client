@@ -214,7 +214,34 @@ go run ./cmd/wechat-ui-bridge
 
 Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`. These windows are the default "operator takes over" schedule: during that time the bridge may keep running, but polling skips work and send/read operations fail closed without focusing WeChat. UI-touching endpoints return HTTP `423` with `operator pause active`.
 
-For an immediate temporary human takeover without restarting the bridge, prefer the local loopback API:
+For an immediate temporary human takeover without restarting the bridge, use the helper script:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -Action set -Minutes 30 -Reason "operator takeover"
+```
+
+To pause until an exact local/RFC3339 time:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -Action set -Until "2026-06-24T18:30:00+08:00" -Reason "operator takeover"
+```
+
+To set a local daily pause window through the dynamic pause file:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -LocalFile -Action set -Windows "12:00-13:30,19:00-22:00" -Reason "daily operator takeover"
+```
+
+To check or clear the current dynamic pause:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -Action status
+.\scripts\wechat_ui_operator_pause.ps1 -Action clear
+```
+
+If the bridge is not running yet, add `-LocalFile` to write or clear the pause file directly. The bridge will honor that file when it starts as long as `WECHAT_UI_OPERATOR_PAUSE_FILE` points to the same path.
+
+The same operations are also available through the local loopback API:
 
 ```powershell
 Invoke-RestMethod -Method Post `
@@ -222,8 +249,6 @@ Invoke-RestMethod -Method Post `
   -ContentType 'application/json' `
   -Body '{"minutes":30,"reason":"operator takeover"}'
 ```
-
-To pause until an exact local/RFC3339 time:
 
 ```powershell
 Invoke-RestMethod -Method Post `
