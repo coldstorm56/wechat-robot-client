@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -33,6 +36,19 @@ def post_json(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, s
             return resp.status, resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        return 0, str(exc.reason)
+
+
+def get_json(url: str, timeout: float) -> tuple[int, str]:
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        return 0, str(exc.reason)
 
 
 def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -151,6 +167,35 @@ def make_wechat_handler(recorder: Recorder) -> type[BaseHTTPRequestHandler]:
                     },
                 )
                 return
+            if self.path.endswith("/Login/GetCacheInfo"):
+                write_json(
+                    self,
+                    200,
+                    {
+                        "Success": True,
+                        "Code": 0,
+                        "Message": "ok",
+                        "Data": {
+                            "Wxid": self.server.wechat_id,  # type: ignore[attr-defined]
+                            "wxid": self.server.wechat_id,  # type: ignore[attr-defined]
+                            "DeviceName": "assistant-flow-e2e",
+                            "deviceName": "assistant-flow-e2e",
+                        },
+                    },
+                )
+                return
+            if self.path.endswith("/User/GetContractProfile"):
+                write_json(
+                    self,
+                    200,
+                    {
+                        "Success": True,
+                        "Code": 0,
+                        "Message": "ok",
+                        "Data": {"baseResponse": {"ret": 0}, "userInfo": {}, "userInfoExt": {}},
+                    },
+                )
+                return
             if self.path.endswith("/Friend/GetContractDetail"):
                 wxid = body.get("Towxids") or body.get("ToWxIDs") or body.get("Wxid") or "filehelper"
                 write_json(
@@ -178,6 +223,77 @@ def serve(server: ThreadingHTTPServer) -> threading.Thread:
     return thread
 
 
+def wait_for_main(
+    main_url: str,
+    timeout: float,
+    process: subprocess.Popen[bytes] | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    deadline = time.time() + timeout
+    last: dict[str, Any] = {}
+    while time.time() < deadline:
+        if process is not None and process.poll() is not None:
+            return False, {"process_exited": process.returncode, "last": last}
+        status, body = get_json(f"{main_url.rstrip('/')}/api/v1/robot/is-running", 2)
+        last = {"status": status, "body": body}
+        if status < 300:
+            try:
+                parsed = json.loads(body)
+                last["parsed"] = parsed
+                if parsed.get("code") == 200:
+                    return True, last
+            except json.JSONDecodeError:
+                pass
+        time.sleep(1)
+    return False, last
+
+
+def stop_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def start_main_process(args: argparse.Namespace, openclaw_url: str, wechat_host: str) -> subprocess.Popen[bytes]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "WECHAT_CLIENT_PORT": str(args.main_port),
+            "WECHAT_SERVER_HOST": wechat_host,
+            "OPENCLAW_ENABLED": "true",
+            "OPENCLAW_BASE_URL": openclaw_url,
+            "OPENCLAW_TIMEOUT": str(int(args.timeout)),
+            "BOT_NAME": args.bot_name,
+            "TRIGGER_MODE": args.trigger_mode,
+            "TRIGGER_PREFIX": args.trigger_prefix,
+        }
+    )
+    if args.go_env:
+        env["GO_ENV"] = args.go_env
+    log_path = args.main_log or os.path.join(tempfile.gettempdir(), "assistant-flow-e2e-main.log")
+    log_file = open(log_path, "ab", buffering=0)
+    print(json.dumps({"main_log": log_path, "main_command": args.start_main_command}, ensure_ascii=False), flush=True)
+    return subprocess.Popen(
+        args.start_main_command,
+        cwd=args.repo_root,
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        shell=True,
+    )
+
+
 def run_self_test(args: argparse.Namespace) -> int:
     recorder = Recorder()
     openclaw = ThreadingHTTPServer(("127.0.0.1", 0), make_openclaw_handler(recorder, args.reply))
@@ -188,6 +304,12 @@ def run_self_test(args: argparse.Namespace) -> int:
     wechat_url = f"http://127.0.0.1:{wechat.server_port}/api/Msg/SendTxt"
 
     class FakeMainHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.endswith("/api/v1/robot/is-running") or self.path.endswith("/api/v1/robot/is-loggedin"):
+                write_json(self, 200, {"code": 200, "data": True, "message": ""})
+                return
+            write_json(self, 404, {"ok": False})
+
         def do_POST(self) -> None:  # noqa: N802
             _ = read_json_body(self)
             status, body = post_json(openclaw_url, {"message": args.content}, args.timeout)
@@ -213,6 +335,13 @@ def run_self_test(args: argparse.Namespace) -> int:
 
 
 def run_smoke(args: argparse.Namespace, recorder: Recorder, main_url: str) -> int:
+    preflight = {}
+    for name, path in {
+        "is_running": "/api/v1/robot/is-running",
+        "is_loggedin": "/api/v1/robot/is-loggedin",
+    }.items():
+        status, body = get_json(f"{main_url.rstrip('/')}{path}", args.timeout)
+        preflight[name] = {"status": status, "body": body}
     payload = build_sync_callback(
         wechat_id=args.wechat_id,
         from_wxid=args.from_wxid,
@@ -239,12 +368,16 @@ def run_smoke(args: argparse.Namespace, recorder: Recorder, main_url: str) -> in
         "sent_message": sent,
         "openclaw_request_count": len(recorder.openclaw_requests),
         "expected_reply": args.reply,
+        "main_preflight": preflight,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not sent:
         print(
             "No /api/Msg/SendTxt call was observed. Check that the main service was started "
-            "with WECHAT_SERVER_HOST, OPENCLAW_ENABLED=true, OPENCLAW_BASE_URL, and AI chat enabled.",
+            "with WECHAT_SERVER_HOST, OPENCLAW_ENABLED=true, OPENCLAW_BASE_URL, a non-empty active "
+            "robot wxid matching --wechat-id, and AI chat enabled. If main_callback_status is 200 "
+            "but openclaw_request_count is 0, the callback was accepted by HTTP but did not reach "
+            "assistant processing.",
             file=sys.stderr,
         )
         return 1
@@ -258,6 +391,12 @@ def run_smoke(args: argparse.Namespace, recorder: Recorder, main_url: str) -> in
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test the assistant flow against local mocks.")
     parser.add_argument("--main-url", default="http://127.0.0.1:9001")
+    parser.add_argument("--main-port", type=int, default=9002)
+    parser.add_argument("--repo-root", default=os.getcwd())
+    parser.add_argument("--start-main-command", default="", help="optional command, e.g. 'go run .'")
+    parser.add_argument("--main-start-timeout", type=float, default=90.0)
+    parser.add_argument("--main-log", default="")
+    parser.add_argument("--go-env", default="dev")
     parser.add_argument("--wechat-port", type=int, default=3022)
     parser.add_argument("--openclaw-port", type=int, default=18791)
     parser.add_argument("--wechat-id", default="wechat_ui_bot")
@@ -267,6 +406,9 @@ def main() -> int:
     parser.add_argument("--at-wxid", default="")
     parser.add_argument("--content", default="assistant flow e2e smoke")
     parser.add_argument("--reply", default="OpenClaw mock reply")
+    parser.add_argument("--bot-name", default="助手")
+    parser.add_argument("--trigger-mode", default="at_or_prefix")
+    parser.add_argument("--trigger-prefix", default="助手：")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--wait-reply-seconds", type=float, default=20.0)
     parser.add_argument("--inject-delay-seconds", type=float, default=0.0)
@@ -280,14 +422,18 @@ def main() -> int:
     recorder = Recorder()
     openclaw = ThreadingHTTPServer(("127.0.0.1", args.openclaw_port), make_openclaw_handler(recorder, args.reply))
     wechat = ThreadingHTTPServer(("127.0.0.1", args.wechat_port), make_wechat_handler(recorder))
+    wechat.wechat_id = args.wechat_id  # type: ignore[attr-defined]
     serve(openclaw)
     serve(wechat)
+    openclaw_url = f"http://127.0.0.1:{args.openclaw_port}/api/assistant/chat"
+    wechat_host = f"127.0.0.1:{args.wechat_port}"
+    main_process: subprocess.Popen[bytes] | None = None
     print(
         json.dumps(
             {
-                "mock_openclaw_url": f"http://127.0.0.1:{args.openclaw_port}/api/assistant/chat",
-                "mock_wechat_server_host": f"127.0.0.1:{args.wechat_port}",
-                "main_url": args.main_url,
+                "mock_openclaw_url": openclaw_url,
+                "mock_wechat_server_host": wechat_host,
+                "main_url": args.main_url if not args.start_main_command else f"http://127.0.0.1:{args.main_port}",
             },
             ensure_ascii=False,
             indent=2,
@@ -298,11 +444,21 @@ def main() -> int:
             print("Mocks are running. Press Ctrl+C to stop.", file=sys.stderr)
             while True:
                 time.sleep(1)
+        if args.start_main_command:
+            args.main_url = f"http://127.0.0.1:{args.main_port}"
+            main_process = start_main_process(args, openclaw_url, wechat_host)
+            ready, state = wait_for_main(args.main_url, args.main_start_timeout, main_process)
+            if not ready:
+                print(json.dumps({"main_ready": False, "state": state}, ensure_ascii=False, indent=2), file=sys.stderr)
+                return 1
+            print(json.dumps({"main_ready": True, "state": state}, ensure_ascii=False, indent=2), flush=True)
         if args.inject_delay_seconds > 0:
             print(f"Waiting {args.inject_delay_seconds} seconds before injection.", file=sys.stderr)
             time.sleep(args.inject_delay_seconds)
         return run_smoke(args, recorder, args.main_url)
     finally:
+        if main_process is not None:
+            stop_process_tree(main_process)
         openclaw.shutdown()
         wechat.shutdown()
 

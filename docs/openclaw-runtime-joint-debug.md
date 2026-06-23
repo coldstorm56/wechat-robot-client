@@ -393,6 +393,22 @@ go run .
 
 The harness posts one `sync-message` callback to `http://127.0.0.1:9001/api/v1/wechat-client/{wechat_id}/sync-message` and waits for the main service to call the mock `/api/Msg/SendTxt`. `--wechat-id` must match the running `vars.RobotRuntime.WxID`; private chat AI or the relevant group whitelist must already be enabled in the local database. If no `/api/Msg/SendTxt` call is observed, check `WECHAT_SERVER_HOST`, `OPENCLAW_BASE_URL`, the active bot wxid, and the AI enablement settings before moving to real WeChat UI acceptance.
 
+The harness can also start an isolated temporary main service on a different port, leaving an existing `9001` process untouched:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid filehelper `
+  --content "assistant flow real-main smoke" `
+  --reply "OpenClaw mock reply real-main"
+```
+
+Current local validation note (2026-06-24): the temporary `9002` main service started and reported `/api/v1/robot/is-running=true` and `/api/v1/robot/is-loggedin=false`, and the callback returned HTTP 200. No mock OpenClaw request and no mock `/api/Msg/SendTxt` were observed because `robot_admin.robot.id=27` currently has an empty `wechat_id`; `SyncMessageCallback` ignores callbacks whose `{wechat_id}` does not match `vars.RobotRuntime.WxID`. Fill the active robot wxid, or run against the real logged-in assistant bot row, before treating this harness as a passed main-service E2E check.
+
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 
 ```powershell
