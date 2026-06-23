@@ -44,7 +44,7 @@ Use the override file when running the client on the host:
 
 ```powershell
 cd .deploy/local
-docker compose -f docker-compose.yml -f docker-compose.openclaw-runtime.yml up -d wechat-admin-mysql wechat-admin-redis wechat-admin-qdrant wechat-server
+docker compose -f docker-compose.yml -f docker-compose.openclaw-runtime.yml up -d wechat-admin-mysql wechat-admin-redis wechat-admin-qdrant wechat-server wechat-ipad
 ```
 
 Expected host ports:
@@ -53,9 +53,22 @@ Expected host ports:
 MySQL: 127.0.0.1:3306
 Redis: 127.0.0.1:6379
 Qdrant gRPC: 127.0.0.1:6334
-WeChat protocol service: 127.0.0.1:8090
+WeChat auth/admin service: 127.0.0.1:8090
+WeChat iPad protocol service: 127.0.0.1:3010
 OpenClaw bridge: 127.0.0.1:18790
 wechat-robot-client: 127.0.0.1:9001
+```
+
+For real personal WeChat login, start the iPad protocol service too:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.openclaw-runtime.yml up -d wechat-ipad
+```
+
+In the host `.env`, `WECHAT_SERVER_HOST` must point to the iPad protocol service:
+
+```text
+WECHAT_SERVER_HOST=127.0.0.1:3010
 ```
 
 If Docker is not installed or not in PATH, install or start Docker Desktop first, then reopen PowerShell and confirm:

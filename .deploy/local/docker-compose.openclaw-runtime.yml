@@ -10,3 +10,22 @@ services:
   wechat-server:
     ports:
       - "8090:3000"
+
+  wechat-ipad:
+    image: registry.cn-shenzhen.aliyuncs.com/houhou/wechat-ipad:latest
+    container_name: wechat-ipad
+    restart: always
+    networks:
+      - wechat-robot
+    ports:
+      - "3010:9000"
+    environment:
+      WECHAT_PORT: 9000
+      REDIS_HOST: wechat-admin-redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: r12345678
+      REDIS_DB: 1
+      WECHAT_CLIENT_HOST: host.docker.internal:9001
+    depends_on:
+      wechat-admin-redis:
+        condition: service_healthy

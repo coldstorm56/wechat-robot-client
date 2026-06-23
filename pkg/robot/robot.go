@@ -103,10 +103,23 @@ func (r *Robot) GetQrCode(loginType string, isPretender bool) (loginData LoginRe
 	if resp.Uuid != "" {
 		loginData.Uuid = resp.Uuid
 		loginData.Data62 = resp.Data62
+		loginData.QRCodeURL = firstNonEmpty(resp.QRCodeURL, resp.QrURL)
+		loginData.QRCodeBase64 = firstNonEmpty(resp.QRCodeBase64, resp.QrBase64)
+		loginData.ExpiredTime = resp.ExpiredTime
+		loginData.DeviceID = resp.DeviceID
 		return
 	}
 	err = errors.New("获取二维码失败")
 	return
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (r *Robot) GetProfile(wxid string) (GetProfileResponse, error) {
