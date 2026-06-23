@@ -267,6 +267,7 @@ POST /api/Operator/PauseStatus
 POST /api/Operator/PauseSet
 POST /api/Operator/PauseClear
 POST /api/Operator/UiStatus
+POST /api/Operator/Readiness
 POST /api/Operator/InjectCurrentLastText
 POST /api/Operator/PollCurrentLastText
 POST /api/Operator/PollStart
@@ -281,6 +282,8 @@ POST /api/Operator/PollStatus
 - `blocking_windows` is preserved so the operator can see which local window needs manual handling.
 
 Use `UiStatus` as the explicit operator/runtime preflight before enabling a poll loop or a real send smoke.
+
+`Readiness` is the combined runtime preflight endpoint. It returns the current operator pause state, poll loop status, and, when not paused, the normalized `UiStatus`. If an operator pause is active, it returns `ready=false` with `reason=operator_pause` without touching the WeChat window.
 
 Dry-run the bridge without touching the WeChat UI:
 
@@ -303,6 +306,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"minutes":5,"reason":"smoke handoff"}'
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseClear
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/UiStatus
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/Readiness
 Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:3021/api/Msg/CurrentLastText `
   -ContentType 'application/json' `

@@ -134,6 +134,91 @@ func TestUiStatusHandlerNormalizesScriptOutput(t *testing.T) {
 	}
 }
 
+func TestReadinessHandlerSkipsUIStatusDuringPause(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pause.json")
+	if err := os.WriteFile(path, []byte(`{"paused":true,"reason":"manual takeover"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := bridgeConfig{
+		Python:            "python-that-should-not-run",
+		Script:            "script-that-should-not-run.py",
+		Timeout:           time.Second,
+		OperatorPauseFile: path,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/Readiness", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+
+	readinessHandler(cfg, newPollRunner())(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	data := decodeClientDataMap(t, resp)
+	if data["ready"] != false || data["reason"] != "operator_pause" {
+		t.Fatalf("Data=%#v", data)
+	}
+	if _, ok := data["ui_status"]; ok {
+		t.Fatalf("ui_status should be omitted during pause: %#v", data)
+	}
+}
+
+func TestReadinessHandlerReportsBlockedUI(t *testing.T) {
+	cfg := bridgeConfig{
+		Python:  writeUIStatusHelperCommand(t, blockedUIStatusPayload()),
+		Script:  "ignored-script-arg",
+		Timeout: time.Second,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/Readiness", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+
+	readinessHandler(cfg, newPollRunner())(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	data := decodeClientDataMap(t, resp)
+	if data["ready"] != false || data["reason"] != "blocking_window" {
+		t.Fatalf("Data=%#v", data)
+	}
+	uiStatus, ok := data["ui_status"].(map[string]any)
+	if !ok || uiStatus["blocked"] != true || uiStatus["usable"] != false {
+		t.Fatalf("ui_status=%#v", data["ui_status"])
+	}
+}
+
+func TestReadinessHandlerReportsReady(t *testing.T) {
+	cfg := bridgeConfig{
+		Python:  writeUIStatusHelperCommand(t, usableUIStatusPayload()),
+		Script:  "ignored-script-arg",
+		Timeout: time.Second,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/Readiness", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+
+	readinessHandler(cfg, newPollRunner())(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	data := decodeClientDataMap(t, resp)
+	if data["ready"] != true || data["reason"] != "" {
+		t.Fatalf("Data=%#v", data)
+	}
+}
+
+func decodeClientDataMap(t *testing.T, resp *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body clientResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := body.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data=%#v", body.Data)
+	}
+	return data
+}
+
 func blockedUIStatusPayload() string {
 	return `{"ok":true,"status":{"foreground":false,"title_match":false,"blocking_windows":[{"name":"Windows Security Alert","class_name":"#32770"}]}}`
 }

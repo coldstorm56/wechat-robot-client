@@ -176,6 +176,7 @@ func main() {
 	mux.HandleFunc("/api/Operator/PauseSet", pauseSetHandler(cfg))
 	mux.HandleFunc("/api/Operator/PauseClear", pauseClearHandler(cfg))
 	mux.HandleFunc("/api/Operator/UiStatus", uiStatusHandler(cfg))
+	mux.HandleFunc("/api/Operator/Readiness", readinessHandler(cfg, backgroundPoller))
 	mux.HandleFunc("/api/Operator/InjectCurrentLastText", injectCurrentLastTextHandler(cfg))
 	mux.HandleFunc("/api/Operator/PollCurrentLastText", pollCurrentLastTextHandler(cfg))
 	mux.HandleFunc("/api/Operator/PollStart", pollStartHandler(cfg, backgroundPoller))
@@ -331,6 +332,41 @@ func uiStatusHandler(cfg bridgeConfig) http.HandlerFunc {
 			return
 		}
 		writeClientOK(w, status)
+	}
+}
+
+func readinessHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		pause := currentPauseState(cfg, time.Now())
+		result := map[string]any{
+			"ready":     true,
+			"reason":    "",
+			"pause":     pause,
+			"poll_loop": runner.Status(),
+		}
+		if pause.Paused {
+			result["ready"] = false
+			result["reason"] = "operator_pause"
+			writeClientOK(w, result)
+			return
+		}
+		uiStatus, err := readNormalizedUIStatus(r.Context(), cfg)
+		if err != nil {
+			result["ready"] = false
+			result["reason"] = "ui_status_error"
+			result["error"] = err.Error()
+			writeClientOK(w, result)
+			return
+		}
+		result["ui_status"] = uiStatus
+		if usable, ok := uiStatus["usable"].(bool); ok && !usable {
+			result["ready"] = false
+			result["reason"] = firstNonEmpty(anyString(uiStatus["unusable_reason"]), "ui_unusable")
+		}
+		writeClientOK(w, result)
 	}
 }
 
@@ -1626,6 +1662,13 @@ func firstNonEmpty(values ...string) string {
 		if value != "" {
 			return value
 		}
+	}
+	return ""
+}
+
+func anyString(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
 	}
 	return ""
 }
