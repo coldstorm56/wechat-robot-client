@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -144,7 +145,19 @@ def get_wechat_windows() -> list[auto.Control]:
     for hwnd in iter_wechat_window_handles():
         with contextlib.suppress(Exception):
             controls.append(auto.ControlFromHandle(hwnd))
+    controls.sort(key=window_priority)
     return controls
+
+
+def window_priority(ctrl: auto.Control) -> tuple[int, int]:
+    class_name = ctrl.ClassName or ""
+    rect = ctrl.BoundingRectangle
+    area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+    if class_name == "Chrome_WidgetWin_0" and area > 0:
+        return (0, -area)
+    if area > 0:
+        return (1, -area)
+    return (2, 0)
 
 
 def describe_window(ctrl: auto.Control) -> WindowInfo:
@@ -212,11 +225,14 @@ def open_contact(ctrl: auto.Control, contact: str) -> None:
 
 
 def send_text(ctrl: auto.Control, contact: str, message: str) -> None:
-    open_contact(ctrl, contact)
+    if contact:
+        open_contact(ctrl, contact)
+    else:
+        activate(ctrl)
     paste_text(message)
     time.sleep(0.2)
     auto.SendKeys("{Enter}", waitTime=0.05)
-    logging.info("sent text via UI automation contact=%r length=%d", contact, len(message))
+    logging.info("sent text via UI automation contact=%r length=%d", contact or "<current>", len(message))
 
 
 def collect_texts(ctrl: auto.Control, limit: int = 80) -> list[str]:
@@ -247,6 +263,8 @@ def read_last_text(ctrl: auto.Control, contact: str | None) -> str:
         open_contact(ctrl, contact)
     activate(ctrl)
     texts = [text for text in collect_texts(ctrl) if text.strip()]
+    if any("搜一搜" in text for text in texts[:10]):
+        raise RuntimeError("current WeChat UIA document is a search page, not a chat message list")
     ignored = {
         "微信",
         "通讯录",
@@ -267,10 +285,20 @@ def read_last_text(ctrl: auto.Control, contact: str | None) -> str:
         and not text.endswith(" - 贴图")
         and not text.endswith(" - 图片")
         and not text.endswith(" - 文件")
+        and not is_time_label(text)
     ]
     if not candidates:
         raise RuntimeError("no readable text found in current WeChat conversation")
     return candidates[-1]
+
+
+def is_time_label(text: str) -> bool:
+    return bool(
+        re.fullmatch(r"\d{1,2}:\d{2}", text)
+        or re.fullmatch(r"\d+\s*(秒|分钟|小时|天|个月|年)前", text)
+        or text in {"刚刚", "昨天", "前天", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"}
+        or re.fullmatch(r"\d{1,2}月\d{1,2}日\s+\d{1,2}:\d{2}", text)
+    )
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -316,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.set_defaults(func=cmd_inspect)
 
     send = sub.add_parser("send", help="send a text message through the WeChat UI")
-    send.add_argument("--contact", default=DEFAULT_CONTACT)
+    send.add_argument("--contact", default=None, help="experimental: navigate by contact name before sending")
     send.add_argument("--message", required=True)
     send.set_defaults(func=cmd_send)
 

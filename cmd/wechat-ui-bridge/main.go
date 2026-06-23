@@ -29,6 +29,7 @@ type bridgeConfig struct {
 	ContactAliases map[string]string
 	Timeout        time.Duration
 	DryRun         bool
+	SendCurrent    bool
 }
 
 type clientResponse struct {
@@ -98,6 +99,7 @@ func loadConfig() bridgeConfig {
 	aliases := flag.String("contact-aliases", envString("WECHAT_UI_CONTACT_ALIASES", "filehelper=文件传输助手"), "comma-separated wxid=display-name contact aliases")
 	timeoutSeconds := flag.Int("timeout", envInt("WECHAT_UI_TIMEOUT", 12), "script timeout seconds")
 	dryRun := flag.Bool("dry-run", envBool("WECHAT_UI_DRY_RUN", false), "return protocol-shaped success without touching WeChat UI")
+	sendCurrent := flag.Bool("send-current", envBool("WECHAT_UI_SEND_CURRENT_CHAT", true), "send to the currently open WeChat conversation instead of navigating by contact")
 	flag.Parse()
 
 	return bridgeConfig{
@@ -109,17 +111,19 @@ func loadConfig() bridgeConfig {
 		ContactAliases: parseAliases(*aliases),
 		Timeout:        time.Duration(*timeoutSeconds) * time.Second,
 		DryRun:         *dryRun,
+		SendCurrent:    *sendCurrent,
 	}
 }
 
 func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"status":   "live",
-			"bridge":   "wechat-ui",
-			"bot_wxid": cfg.BotWxID,
-			"dry_run":  cfg.DryRun,
+			"ok":                true,
+			"status":            "live",
+			"bridge":            "wechat-ui",
+			"bot_wxid":          cfg.BotWxID,
+			"dry_run":           cfg.DryRun,
+			"send_current_chat": cfg.SendCurrent,
 		})
 	}
 }
@@ -205,7 +209,11 @@ func sendTextHandler(cfg bridgeConfig) http.HandlerFunc {
 
 		contact := contactName(cfg, req.ToWxID)
 		if !cfg.DryRun {
-			if _, err := runScript(r.Context(), cfg, "send", "--contact", contact, "--message", req.Content); err != nil {
+			args := []string{"send", "--message", req.Content}
+			if !cfg.SendCurrent {
+				args = append(args, "--contact", contact)
+			}
+			if _, err := runScript(r.Context(), cfg, args...); err != nil {
 				writeClientError(w, http.StatusBadGateway, err.Error())
 				return
 			}

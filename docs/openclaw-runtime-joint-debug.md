@@ -150,11 +150,10 @@ If WeChat is not already running, explicitly allow the script to start the local
 python .\scripts\wechat_ui_smoke.py --launch inspect
 ```
 
-Send one explicit smoke message to File Transfer Assistant:
+Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first:
 
 ```powershell
 python .\scripts\wechat_ui_smoke.py send `
-  --contact '文件传输助手' `
   --message 'wechat-ui-automation smoke test'
 ```
 
@@ -180,6 +179,7 @@ $env:WECHAT_UI_BRIDGE_ADDR='127.0.0.1:3021'
 $env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
 $env:WECHAT_UI_BOT_NAME='此刻正佳'
 $env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
+$env:WECHAT_UI_SEND_CURRENT_CHAT='true'
 go run ./cmd/wechat-ui-bridge
 ```
 
@@ -218,4 +218,4 @@ Point the main service at this bridge only after the explicit send/read smoke ch
 $env:WECHAT_SERVER_HOST='127.0.0.1:3021'
 ```
 
-Current bridge boundary: this first bridge wraps explicit text sending and best-effort visible last-text reads. On the current Windows WeChat 4.x client, UI Automation can send to File Transfer Assistant, but visible message-body reads may fail when WeChat hides the Chromium message subtree behind the Qt/MMUI shell. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.
+Current bridge boundary: this first bridge wraps explicit text sending to the currently open conversation and best-effort visible last-text reads. On the current Windows WeChat 4.x client, UI Automation can send to File Transfer Assistant when that conversation is already open, but contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path. Visible message-body reads may still return time labels or fail when WeChat hides the Chromium message subtree behind the Qt/MMUI shell. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.
