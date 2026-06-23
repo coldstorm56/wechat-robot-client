@@ -27,6 +27,7 @@
 - Protocol bridge: normalize `/api/Operator/UiStatus` with `blocked`, `usable`, and `unusable_reason` fields so callers can avoid UI automation while WeChat is covered or on the wrong chat.
 - Runtime safety: lock the operator-pause contract in tests so send/read/status/inject/poll endpoints return HTTP 423 without invoking UI automation during manual takeover.
 - Runtime validation: cover `/api/Operator/UiStatus` at the handler level with a fake local smoke script, proving blocked-window script output becomes `blocked=true` and `usable=false` in the bridge API.
+- Runtime safety: add optional `require_ui_usable` preflight to `PollStart`, rejecting background polling before it starts when `UiStatus` reports an unusable WeChat surface.
 - Runtime validation: add a local assistant-flow E2E harness with mock OpenClaw and mock WeChat bridge endpoints to verify the 9001 `sync-message` to `/Msg/SendTxt` path before real WeChat UI acceptance.
 - Runtime validation: let the assistant-flow E2E harness start an isolated temporary main service and report callback/preflight diagnostics when active robot wxid or AI enablement prerequisites are not satisfied.
 - Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.

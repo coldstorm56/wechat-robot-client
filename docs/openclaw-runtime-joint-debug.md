@@ -356,13 +356,15 @@ Explicit low-frequency polling loop:
 Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:3021/api/Operator/PollStart `
   -ContentType 'application/json' `
-  -Body '{"interval_seconds":60}'
+  -Body '{"interval_seconds":60,"require_ui_usable":true}'
 
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PollStatus
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PollStop
 ```
 
 The poll loop is never started by default. `PollStart` runs one check immediately and then repeats at a low frequency; intervals below 30 seconds are clamped to 30 seconds. During operator takeover pause windows or a dynamic pause file, the loop records a skipped state and does not read or focus the WeChat window.
+
+Pass `{"require_ui_usable":true}` when starting a real poll loop. The bridge runs `UiStatus` first and refuses to start with HTTP `409` if WeChat is covered by a blocking dialog, on the wrong chat title, or otherwise marked `usable=false`. This is recommended for daily operation; omit it only for controlled debugging.
 
 By default, the loop stops itself after 3 consecutive poll errors (`WECHAT_UI_POLL_MAX_ERRORS=3`). This prevents repeated focus/OCR attempts when the WeChat window is too small, hidden, on the wrong page, or otherwise unreadable. Pass `{"max_errors":0}` only for controlled debugging when the operator is watching the desktop.
 

@@ -109,6 +109,7 @@ type pollLoopStartRequest struct {
 	AtWxID          string `json:"at_wxid"`
 	Inject          *bool  `json:"inject"`
 	PrimeOnStart    *bool  `json:"prime_on_start"`
+	RequireUIUsable *bool  `json:"require_ui_usable"`
 	IntervalSeconds int    `json:"interval_seconds"`
 	MaxErrors       *int   `json:"max_errors"`
 }
@@ -324,16 +325,12 @@ func uiStatusHandler(cfg bridgeConfig) http.HandlerFunc {
 		if !allowAutomationNow(w, cfg) {
 			return
 		}
-		args := []string{"status"}
-		if cfg.ExpectChatTitle != "" {
-			args = append(args, "--expect-title", cfg.ExpectChatTitle)
-		}
-		output, err := runScript(r.Context(), cfg, args...)
+		status, err := readNormalizedUIStatus(r.Context(), cfg)
 		if err != nil {
 			writeClientError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		writeClientOK(w, normalizeUIStatus(output.Status))
+		writeClientOK(w, status)
 	}
 }
 
@@ -726,6 +723,22 @@ func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
 			writeClientError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if req.RequireUIUsable != nil && *req.RequireUIUsable {
+			status, err := readNormalizedUIStatus(r.Context(), cfg)
+			if err != nil {
+				writeClientError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			if usable, ok := status["usable"].(bool); ok && !usable {
+				writeJSON(w, http.StatusConflict, clientResponse{
+					Success: false,
+					Code:    -4,
+					Message: "wechat UI is not usable",
+					Data:    status,
+				})
+				return
+			}
+		}
 		maxErrors := cfg.MaxPollErrors
 		if req.MaxErrors != nil {
 			maxErrors = *req.MaxErrors
@@ -777,6 +790,18 @@ func readCurrentLastText(ctx context.Context, cfg bridgeConfig, req readLastRequ
 		return "", contact, err
 	}
 	return output.LastText, contact, nil
+}
+
+func readNormalizedUIStatus(ctx context.Context, cfg bridgeConfig) (map[string]any, error) {
+	args := []string{"status"}
+	if cfg.ExpectChatTitle != "" {
+		args = append(args, "--expect-title", cfg.ExpectChatTitle)
+	}
+	output, err := runScript(ctx, cfg, args...)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeUIStatus(output.Status), nil
 }
 
 type syncPostResult struct {

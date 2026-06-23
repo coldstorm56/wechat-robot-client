@@ -105,7 +105,7 @@ func TestNormalizeUIStatusPreservesUnknownShape(t *testing.T) {
 
 func TestUiStatusHandlerNormalizesScriptOutput(t *testing.T) {
 	cfg := bridgeConfig{
-		Python:          writeUIStatusHelperCommand(t),
+		Python:          writeUIStatusHelperCommand(t, blockedUIStatusPayload()),
 		Script:          "ignored-script-arg",
 		Timeout:         time.Second,
 		ExpectChatTitle: "文件传输助手",
@@ -134,10 +134,17 @@ func TestUiStatusHandlerNormalizesScriptOutput(t *testing.T) {
 	}
 }
 
-func writeUIStatusHelperCommand(t *testing.T) string {
+func blockedUIStatusPayload() string {
+	return `{"ok":true,"status":{"foreground":false,"title_match":false,"blocking_windows":[{"name":"Windows Security Alert","class_name":"#32770"}]}}`
+}
+
+func usableUIStatusPayload() string {
+	return `{"ok":true,"status":{"foreground":true,"title_match":true,"blocking_windows":[]}}`
+}
+
+func writeUIStatusHelperCommand(t *testing.T, payload string) string {
 	t.Helper()
 	dir := t.TempDir()
-	payload := `{"ok":true,"status":{"foreground":false,"title_match":false,"blocking_windows":[{"name":"Windows Security Alert","class_name":"#32770"}]}}`
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "ui-status-helper.cmd")
 		if err := os.WriteFile(path, []byte("@echo off\r\necho "+payload+"\r\n"), 0o700); err != nil {
@@ -899,6 +906,66 @@ func TestPollStartHandlerAllowsObserveLoopWithoutCallback(t *testing.T) {
 	runner := newPollRunner()
 	cfg := bridgeConfig{BotWxID: "wechat_ui_bot", Timeout: time.Second}
 	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":60,"inject":false}`))
+	resp := httptest.NewRecorder()
+
+	pollStartHandler(cfg, runner)(resp, req)
+	defer runner.Stop()
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !runner.Status()["running"].(bool) {
+		t.Fatal("runner should start")
+	}
+}
+
+func TestPollStartHandlerRejectsUnusableUIPreflight(t *testing.T) {
+	runner := newPollRunner()
+	cfg := bridgeConfig{
+		BotWxID: "wechat_ui_bot",
+		Python:  writeUIStatusHelperCommand(t, blockedUIStatusPayload()),
+		Script:  "ignored-script-arg",
+		Timeout: time.Second,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":60,"inject":false,"require_ui_usable":true}`))
+	resp := httptest.NewRecorder()
+
+	pollStartHandler(cfg, runner)(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if runner.Status()["running"].(bool) {
+		t.Fatal("runner should not start")
+	}
+	var body clientResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := body.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data=%#v", body.Data)
+	}
+	if data["blocked"] != true || data["usable"] != false {
+		t.Fatalf("Data=%#v", data)
+	}
+}
+
+func TestPollStartHandlerAllowsUsableUIPreflight(t *testing.T) {
+	oldReader := readVisibleText
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "observe baseline", "", nil
+	}
+	defer func() { readVisibleText = oldReader }()
+
+	runner := newPollRunner()
+	cfg := bridgeConfig{
+		BotWxID: "wechat_ui_bot",
+		Python:  writeUIStatusHelperCommand(t, usableUIStatusPayload()),
+		Script:  "ignored-script-arg",
+		Timeout: time.Second,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":60,"inject":false,"require_ui_usable":true}`))
 	resp := httptest.NewRecorder()
 
 	pollStartHandler(cfg, runner)(resp, req)
