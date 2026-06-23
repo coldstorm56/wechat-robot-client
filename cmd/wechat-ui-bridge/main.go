@@ -266,9 +266,12 @@ func readLastTextHandler(cfg bridgeConfig) http.HandlerFunc {
 			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
 			return
 		}
-		contact := strings.TrimSpace(req.Contact)
-		if contact == "" && strings.TrimSpace(req.ToWxID) != "" {
-			contact = contactName(cfg, req.ToWxID)
+		contact := ""
+		if !cfg.SendCurrent {
+			contact = strings.TrimSpace(req.Contact)
+			if contact == "" && strings.TrimSpace(req.ToWxID) != "" {
+				contact = contactName(cfg, req.ToWxID)
+			}
 		}
 		args := []string{"read-last"}
 		if contact != "" {

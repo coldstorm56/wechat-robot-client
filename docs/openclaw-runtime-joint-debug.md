@@ -150,7 +150,7 @@ If WeChat is not already running, explicitly allow the script to start the local
 python .\scripts\wechat_ui_smoke.py --launch inspect
 ```
 
-Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first. The command returns `ok=true` only after the submitted text is visible again in the WeChat UI; if visible delivery cannot be verified, treat the send as unproven even if the keyboard sequence ran.
+Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first. The command returns `ok=true` only after local screenshot OCR reads the submitted text from the visible WeChat chat area; if visible delivery cannot be verified, treat the send as unproven even if the keyboard sequence ran.
 
 ```powershell
 python .\scripts\wechat_ui_smoke.py send `
@@ -171,6 +171,14 @@ Read the last visible text from the current conversation, or from a named conver
 python .\scripts\wechat_ui_smoke.py read-last
 python .\scripts\wechat_ui_smoke.py read-last --contact '文件传输助手'
 ```
+
+OCR notes:
+
+- The OCR verification is local-only and uses the visible WeChat window; it does not upload screenshots.
+- Use distinct ASCII smoke text for verification because OCR can normalize or drop spaces.
+- `read-last` returns the last OCR-readable visible text in the chat area, not a protocol message object.
+- On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
+- If a send attempt fails and OCR still shows only older messages, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
 
 Safety notes:
 
@@ -218,6 +226,10 @@ Bridge smoke checks:
 Invoke-RestMethod http://127.0.0.1:3021/health
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Login/GetCacheInfo
 Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Msg/CurrentLastText `
+  -ContentType 'application/json' `
+  -Body '{}'
+Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:3021/api/Msg/SendTxt `
   -ContentType 'application/json' `
   -Body '{"Wxid":"wechat_ui_bot","ToWxid":"filehelper","Content":"wechat-ui bridge smoke"}'
@@ -229,4 +241,4 @@ Point the main service at this bridge only after the explicit send/read smoke ch
 $env:WECHAT_SERVER_HOST='127.0.0.1:3021'
 ```
 
-Current bridge boundary: this first bridge wraps explicit text submission to the currently open conversation and best-effort visible last-text reads. A keyboard submission is not accepted as real delivery unless the same text becomes visible in the WeChat UI. On the current Windows WeChat 4.x client, contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path. Visible message-body reads may still return time labels or fail when WeChat hides the Chromium message subtree behind the Qt/MMUI shell. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.
+Current bridge boundary: this first bridge wraps explicit text submission to the currently open conversation and OCR-based visible last-text reads. With `WECHAT_UI_SEND_CURRENT_CHAT=true`, both bridge send and bridge read avoid automatic contact search even if a `filehelper`/`to_wxid` field is provided. A keyboard submission is not accepted as real delivery unless the same text becomes visible in the WeChat UI. On the current Windows WeChat 4.x client, contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path, and message-editor focus can fail from a background bridge process. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.

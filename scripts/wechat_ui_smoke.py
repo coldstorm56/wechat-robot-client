@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import logging
 import os
@@ -23,10 +24,12 @@ from typing import Iterable
 
 try:
     import uiautomation as auto
+    import win32api
     import win32clipboard
     import win32con
     import win32gui
     import win32process
+    from PIL import ImageGrab
 except ImportError as exc:  # pragma: no cover - host dependency preflight
     print(
         json.dumps(
@@ -191,21 +194,104 @@ def find_wechat_window(timeout: float, launch: bool, exe_path: str) -> auto.Cont
 
 
 def activate(ctrl: auto.Control) -> None:
+    restore_control_window(ctrl)
     ensure_usable_chat_window(ctrl)
     ctrl.SetActive()
     time.sleep(0.5)
 
 
+def restore_control_window(ctrl: auto.Control) -> None:
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    if not hwnd:
+        return
+    if win32gui.IsIconic(hwnd):
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        time.sleep(0.3)
+    force_foreground_window(hwnd)
+
+
+def force_foreground_window(hwnd: int) -> None:
+    win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+    win32gui.SetWindowPos(
+        hwnd,
+        win32con.HWND_TOP,
+        0,
+        0,
+        0,
+        0,
+        win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW,
+    )
+    current_thread = win32api.GetCurrentThreadId()
+    target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+    foreground = win32gui.GetForegroundWindow()
+    foreground_thread = 0
+    if foreground:
+        foreground_thread, _ = win32process.GetWindowThreadProcessId(foreground)
+
+    attached_threads: list[int] = []
+    for thread_id in {target_thread, foreground_thread}:
+        if thread_id and thread_id != current_thread:
+            with contextlib.suppress(Exception):
+                win32process.AttachThreadInput(current_thread, thread_id, True)
+                attached_threads.append(thread_id)
+
+    try:
+        with contextlib.suppress(Exception):
+            win32gui.BringWindowToTop(hwnd)
+        with contextlib.suppress(Exception):
+            win32gui.SetForegroundWindow(hwnd)
+    finally:
+        for thread_id in attached_threads:
+            with contextlib.suppress(Exception):
+                win32process.AttachThreadInput(current_thread, thread_id, False)
+
+    if win32gui.GetForegroundWindow() != hwnd:
+        with contextlib.suppress(Exception):
+            win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+            win32gui.SetForegroundWindow(hwnd)
+    time.sleep(0.3)
+
+
 def ensure_usable_chat_window(ctrl: auto.Control) -> None:
-    rect = ctrl.BoundingRectangle
-    width = rect.right - rect.left
-    height = rect.bottom - rect.top
+    left, top, right, bottom = window_rect(ctrl)
+    width = right - left
+    height = bottom - top
     class_name = (ctrl.ClassName or "").lower()
     if width < 200 or height < 200 or "login" in class_name:
         raise RuntimeError(
             "WeChat was found, but it is not a usable chat window. "
             "Log in to WeChat 4.x and open the main chat window first."
         )
+
+
+def window_rect(ctrl: auto.Control) -> tuple[int, int, int, int]:
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    if hwnd:
+        with contextlib.suppress(Exception):
+            return win32gui.GetWindowRect(hwnd)
+    rect = ctrl.BoundingRectangle
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def screenshot_rect(ctrl: auto.Control) -> tuple[int, int, int, int]:
+    rect = ctrl.BoundingRectangle
+    left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
+    if right - left >= 200 and bottom - top >= 200:
+        return left, top, right, bottom
+    return window_rect(ctrl)
+
+
+def click_message_input(ctrl: auto.Control) -> None:
+    left, top, right, bottom = screenshot_rect(ctrl)
+    width = right - left
+    height = bottom - top
+    x = left + int(width * 0.34)
+    y = bottom - int(height * 0.23)
+    win32api.SetCursorPos((x, y))
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.2)
 
 
 def paste_text(text: str) -> None:
@@ -229,6 +315,7 @@ def send_text(ctrl: auto.Control, contact: str, message: str) -> None:
         open_contact(ctrl, contact)
     else:
         activate(ctrl)
+    click_message_input(ctrl)
     paste_text(message)
     time.sleep(0.2)
     auto.SendKeys("{Enter}", waitTime=0.05)
@@ -238,16 +325,63 @@ def send_text(ctrl: auto.Control, contact: str, message: str) -> None:
 def verify_visible_message(ctrl: auto.Control, expected: str, timeout: float) -> str:
     deadline = time.time() + timeout
     last_error = ""
+    normalized_expected = normalize_for_match(expected)
     while time.time() < deadline:
         try:
-            text = read_last_text(ctrl, None)
-            if expected in text:
+            text = "\n".join(ocr_chat_texts(ctrl))
+            if normalized_expected and normalized_expected in normalize_for_match(text):
                 return text
-            last_error = f"last visible text did not contain submitted message: {text!r}"
+            last_error = f"OCR text did not contain submitted message: {text[-300:]!r}"
         except Exception as exc:
             last_error = str(exc)
         time.sleep(0.5)
     raise RuntimeError(f"message submission attempted but visible delivery was not verified: {last_error}")
+
+
+def normalize_for_match(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text, flags=re.UNICODE).lower()
+
+
+def ocr_rect_texts(rect: tuple[int, int, int, int]) -> list[str]:
+    try:
+        from rapidocr import RapidOCR
+    except ImportError as exc:
+        raise RuntimeError("rapidocr is required for visible send verification") from exc
+
+    left, top, right, bottom = rect
+    if right - left < 200 or bottom - top < 200:
+        raise RuntimeError("cannot OCR an unusable WeChat window")
+    image = ImageGrab.grab((left, top, right, bottom))
+    sink = io.StringIO()
+    logging.getLogger("RapidOCR").disabled = True
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        result = RapidOCR()(image)
+    texts = []
+    for text in getattr(result, "txts", None) or []:
+        if text:
+            texts.append(str(text))
+    return texts
+
+
+def ocr_window_texts(ctrl: auto.Control) -> list[str]:
+    return ocr_rect_texts(screenshot_rect(ctrl))
+
+
+def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    if hwnd and win32gui.GetForegroundWindow() != hwnd:
+        raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered chat area")
+    left, top, right, bottom = screenshot_rect(ctrl)
+    width = right - left
+    height = bottom - top
+    return ocr_rect_texts(
+        (
+            left + int(width * 0.30),
+            top + int(height * 0.11),
+            right - int(width * 0.02),
+            bottom - int(height * 0.28),
+        )
+    )
 
 
 def collect_texts(ctrl: auto.Control, limit: int = 80) -> list[str]:
@@ -277,7 +411,7 @@ def read_last_text(ctrl: auto.Control, contact: str | None) -> str:
     if contact:
         open_contact(ctrl, contact)
     activate(ctrl)
-    texts = [text for text in collect_texts(ctrl) if text.strip()]
+    texts = [text for text in ocr_chat_texts(ctrl) if text.strip()]
     if any("搜一搜" in text for text in texts[:10]):
         raise RuntimeError("current WeChat UIA document is a search page, not a chat message list")
     ignored = {
@@ -301,6 +435,7 @@ def read_last_text(ctrl: auto.Control, contact: str | None) -> str:
         and not text.endswith(" - 图片")
         and not text.endswith(" - 文件")
         and not is_time_label(text)
+        and not re.fullmatch(r"\d{1,2}", text)
     ]
     if not candidates:
         raise RuntimeError("no readable text found in current WeChat conversation")
