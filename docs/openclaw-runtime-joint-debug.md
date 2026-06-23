@@ -374,7 +374,7 @@ python scripts/assistant_flow_e2e.py `
   --openclaw-port 18791 `
   --inject-delay-seconds 45 `
   --wechat-id wechat_ui_bot `
-  --from-wxid filehelper `
+  --from-wxid wxid_e2e_friend `
   --content "assistant flow e2e smoke" `
   --reply "OpenClaw mock reply"
 ```
@@ -398,16 +398,23 @@ The harness can also start an isolated temporary main service on a different por
 ```powershell
 python scripts/assistant_flow_e2e.py `
   --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --prepare-local-db `
   --main-port 9002 `
   --wechat-port 3022 `
   --openclaw-port 18791 `
   --wechat-id wechat_ui_bot `
-  --from-wxid filehelper `
+  --from-wxid wxid_e2e_friend `
   --content "assistant flow real-main smoke" `
   --reply "OpenClaw mock reply real-main"
 ```
 
-Current local validation note (2026-06-24): the temporary `9002` main service started and reported `/api/v1/robot/is-running=true` and `/api/v1/robot/is-loggedin=false`, and the callback returned HTTP 200. No mock OpenClaw request and no mock `/api/Msg/SendTxt` were observed because `robot_admin.robot.id=27` currently has an empty `wechat_id`; `SyncMessageCallback` ignores callbacks whose `{wechat_id}` does not match `vars.RobotRuntime.WxID`. Fill the active robot wxid, or run against the real logged-in assistant bot row, before treating this harness as a passed main-service E2E check.
+Earlier local diagnostic note (2026-06-24): without DB preparation, the temporary `9002` main service started and reported `/api/v1/robot/is-running=true` and `/api/v1/robot/is-loggedin=false`, and the callback returned HTTP 200. No mock OpenClaw request and no mock `/api/Msg/SendTxt` were observed because `robot_admin.robot.id=27` currently has an empty `wechat_id`; `SyncMessageCallback` ignores callbacks whose `{wechat_id}` does not match `vars.RobotRuntime.WxID`.
+
+When using a fresh robot database, confirm that `messages` exists before callback acceptance. The table is required before message plugins can run; it is now included in startup auto-migration for the OpenClaw assistant route.
+
+Use a normal-looking test sender such as `wxid_e2e_friend` for private-chat E2E. `filehelper` is useful for real WeChat UI smoke tests, but the main-service contact classification can treat special built-in accounts as non-friend contacts and skip private AI chat.
+
+Validated local main-service E2E (2026-06-24): with `--prepare-local-db`, the harness temporarily set `robot_admin.robot.id=27` to `wechat_ui_bot`, enabled global private-chat AI, started a temporary `9002` main service, injected `wxid_e2e_friend`, observed one mock OpenClaw request, and captured mock `/api/Msg/SendTxt` with `Content="OpenClaw mock reply cleanup smoke"`. The DB patch restored the original robot/global-settings values and removed test messages/contacts after the run.
 
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 

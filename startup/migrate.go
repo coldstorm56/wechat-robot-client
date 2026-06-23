@@ -31,6 +31,7 @@ func autoMigrateTasks() []migrateTask {
 				&model.KnowledgeDocument{},
 				&model.ImageKnowledgeDocument{},
 				&model.KnowledgeCategory{},
+				&model.Message{},
 				&model.Memory{},
 				&model.MemoryExtractionState{},
 				&model.MemberProfile{},

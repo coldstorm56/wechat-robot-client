@@ -121,6 +121,145 @@ class Recorder:
         self.lock = threading.Lock()
 
 
+class LocalDBPatch:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.robot_row: list[str] | None = None
+        self.global_row: list[str] | None = None
+        self.inserted_global_id: str = ""
+
+    def mysql(self, sql: str) -> str:
+        cmd = [
+            "docker",
+            "exec",
+            self.args.mysql_container,
+            "mysql",
+            f"-u{self.args.mysql_user}",
+            f"-p{self.args.mysql_password}",
+            "-N",
+            "-B",
+            "-e",
+            sql,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "mysql command failed")
+        return result.stdout.strip()
+
+    def apply(self) -> None:
+        robot_sql = (
+            "SELECT COALESCE(wechat_id,''), COALESCE(status,''), COALESCE(CAST(redis_db AS CHAR),'') "
+            f"FROM {quote_ident(self.args.admin_db)}.robot WHERE id={int(self.args.robot_id)};"
+        )
+        robot_out = self.mysql(robot_sql)
+        if not robot_out:
+            raise RuntimeError(f"robot id {self.args.robot_id} was not found in {self.args.admin_db}.robot")
+        self.robot_row = robot_out.split("\t")
+
+        global_sql = (
+            "SELECT id, IF(chat_ai_enabled IS NULL, 'NULL', CAST(chat_ai_enabled AS CHAR)) "
+            f"FROM {quote_ident(self.args.robot_db)}.global_settings ORDER BY id LIMIT 1;"
+        )
+        global_out = self.mysql(global_sql)
+        self.global_row = global_out.split("\t") if global_out else None
+
+        self.mysql(
+            f"UPDATE {quote_ident(self.args.admin_db)}.robot "
+            f"SET wechat_id={sql_string(self.args.wechat_id)}, status='online' "
+            f"WHERE id={int(self.args.robot_id)};"
+        )
+        if self.global_row:
+            self.mysql(
+                f"UPDATE {quote_ident(self.args.robot_db)}.global_settings "
+                f"SET chat_ai_enabled=1 WHERE id={int(self.global_row[0])};"
+            )
+        else:
+            self.mysql(f"INSERT INTO {quote_ident(self.args.robot_db)}.global_settings (chat_ai_enabled) VALUES (1);")
+            self.inserted_global_id = self.mysql(
+                f"SELECT id FROM {quote_ident(self.args.robot_db)}.global_settings ORDER BY id DESC LIMIT 1;"
+            ).strip()
+
+        print(
+            json.dumps(
+                {
+                    "local_db_patch": "applied",
+                    "robot_id": self.args.robot_id,
+                    "wechat_id": self.args.wechat_id,
+                    "global_chat_ai_enabled": True,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
+    def restore(self) -> None:
+        errors: list[str] = []
+        for sql in [
+            f"DELETE FROM {quote_ident(self.args.robot_db)}.assistant_session_logs "
+            f"WHERE request_text={sql_string(self.args.content)};",
+            f"DELETE FROM {quote_ident(self.args.robot_db)}.messages "
+            f"WHERE from_wxid={sql_string(self.args.from_wxid)} "
+            f"AND to_wxid={sql_string(self.args.wechat_id)} "
+            f"AND content={sql_string(self.args.content)};",
+            f"DELETE FROM {quote_ident(self.args.robot_db)}.messages "
+            f"WHERE from_wxid={sql_string(self.args.from_wxid)} "
+            f"AND to_wxid={sql_string(self.args.wechat_id)} "
+            f"AND content={sql_string(self.args.reply)};",
+            f"DELETE FROM {quote_ident(self.args.robot_db)}.contacts "
+            f"WHERE wechat_id={sql_string(self.args.from_wxid)};",
+        ]:
+            try:
+                self.mysql(sql)
+            except Exception as exc:  # pragma: no cover - cleanup diagnostics only.
+                errors.append(str(exc))
+        if self.robot_row is not None:
+            old_wechat_id = self.robot_row[0] if len(self.robot_row) > 0 else ""
+            old_status = self.robot_row[1] if len(self.robot_row) > 1 else ""
+            try:
+                self.mysql(
+                    f"UPDATE {quote_ident(self.args.admin_db)}.robot "
+                    f"SET wechat_id={sql_string(old_wechat_id)}, status={sql_string(old_status)} "
+                    f"WHERE id={int(self.args.robot_id)};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
+        if self.inserted_global_id:
+            try:
+                self.mysql(
+                    f"DELETE FROM {quote_ident(self.args.robot_db)}.global_settings "
+                    f"WHERE id={int(self.inserted_global_id)};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
+        elif self.global_row is not None:
+            old_value = self.global_row[1] if len(self.global_row) > 1 else "NULL"
+            restore_value = "NULL" if old_value == "NULL" else str(int(old_value))
+            try:
+                self.mysql(
+                    f"UPDATE {quote_ident(self.args.robot_db)}.global_settings "
+                    f"SET chat_ai_enabled={restore_value} WHERE id={int(self.global_row[0])};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
+        print(
+            json.dumps(
+                {"local_db_patch": "restored", "errors": errors},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
+
+def quote_ident(value: str) -> str:
+    if not value.replace("_", "").isalnum():
+        raise ValueError(f"unsafe SQL identifier: {value!r}")
+    return "`" + value.replace("`", "``") + "`"
+
+
+def sql_string(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 def make_openclaw_handler(recorder: Recorder, reply: str) -> type[BaseHTTPRequestHandler]:
     class OpenClawHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
@@ -397,10 +536,17 @@ def main() -> int:
     parser.add_argument("--main-start-timeout", type=float, default=90.0)
     parser.add_argument("--main-log", default="")
     parser.add_argument("--go-env", default="dev")
+    parser.add_argument("--prepare-local-db", action="store_true")
+    parser.add_argument("--mysql-container", default="wechat-admin-mysql")
+    parser.add_argument("--mysql-user", default="root")
+    parser.add_argument("--mysql-password", default="mroot12345678")
+    parser.add_argument("--admin-db", default="robot_admin")
+    parser.add_argument("--robot-db", default="openclaw_assistant_dev")
+    parser.add_argument("--robot-id", type=int, default=27)
     parser.add_argument("--wechat-port", type=int, default=3022)
     parser.add_argument("--openclaw-port", type=int, default=18791)
     parser.add_argument("--wechat-id", default="wechat_ui_bot")
-    parser.add_argument("--from-wxid", default="filehelper")
+    parser.add_argument("--from-wxid", default="wxid_e2e_friend")
     parser.add_argument("--to-wxid", default="wechat_ui_bot")
     parser.add_argument("--sender-wxid", default="")
     parser.add_argument("--at-wxid", default="")
@@ -428,6 +574,7 @@ def main() -> int:
     openclaw_url = f"http://127.0.0.1:{args.openclaw_port}/api/assistant/chat"
     wechat_host = f"127.0.0.1:{args.wechat_port}"
     main_process: subprocess.Popen[bytes] | None = None
+    db_patch: LocalDBPatch | None = None
     print(
         json.dumps(
             {
@@ -440,6 +587,9 @@ def main() -> int:
         )
     )
     try:
+        if args.prepare_local_db:
+            db_patch = LocalDBPatch(args)
+            db_patch.apply()
         if args.hold_mocks:
             print("Mocks are running. Press Ctrl+C to stop.", file=sys.stderr)
             while True:
@@ -459,6 +609,8 @@ def main() -> int:
     finally:
         if main_process is not None:
             stop_process_tree(main_process)
+        if db_patch is not None:
+            db_patch.restore()
         openclaw.shutdown()
         wechat.shutdown()
 
