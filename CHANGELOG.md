@@ -6,6 +6,7 @@
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.
 - Runtime fix: return QR code URL/base64 fields from `/api/v1/robot/login` for real scan-login validation.
+- Runtime validation: real QR generation and scan callbacks reached the protocol service, but current `wechat-ipad:latest` login was blocked by WeChat version checks across Mac/iPad/QRx/WinUnified/WinUwp and by a Padx interaction-key error.
 
 ### 新功能
 

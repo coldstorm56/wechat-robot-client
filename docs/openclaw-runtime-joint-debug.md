@@ -104,3 +104,21 @@ go run .
 - Group `助手：ping` receives an OpenClaw reply.
 - A non-whitelisted group does not trigger a reply.
 - `assistant_session_logs` contains `success` rows for successful calls and useful `failed` rows for failures.
+
+## 6. Current personal WeChat protocol blocker
+
+On 2026-06-23, the local Docker and service chain was validated up to QR generation:
+
+- `wechat-ipad:latest` was up to date and reachable on `127.0.0.1:3010`.
+- `wechat-robot-client` was reachable on `127.0.0.1:9001`.
+- `/api/v1/robot/login` returned QR code URL/base64 successfully.
+- The protocol endpoints `LoginGetQRMac`, `LoginGetQR`, `LoginGetQRx`, `LoginGetQRPadx`, `LoginGetQRWinUnified`, and `LoginGetQRWinUwp` all produced scanable QR codes.
+
+Real scan-login did not complete because WeChat rejected the protocol login during `LoginCheckQR`:
+
+```text
+Mac/iPad/QRx/WinUnified/WinUwp: version too low
+Padx: scan status interaction key missing
+```
+
+The main service remained healthy (`is-running=true`) but not logged in (`is-loggedin=false`). Continue true private/group chat validation only after replacing `WECHAT_SERVER_HOST` with a currently working and trusted personal WeChat protocol endpoint, or after the `wechat-ipad` image is updated to a login-compatible version.
