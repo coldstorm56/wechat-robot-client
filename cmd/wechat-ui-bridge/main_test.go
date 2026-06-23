@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -100,6 +101,55 @@ func TestNormalizeUIStatusPreservesUnknownShape(t *testing.T) {
 	if status["blocked"] != false || status["usable"] != true || status["status"] != "raw" {
 		t.Fatalf("status=%#v", status)
 	}
+}
+
+func TestUiStatusHandlerNormalizesScriptOutput(t *testing.T) {
+	cfg := bridgeConfig{
+		Python:          writeUIStatusHelperCommand(t),
+		Script:          "ignored-script-arg",
+		Timeout:         time.Second,
+		ExpectChatTitle: "文件传输助手",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/UiStatus", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+
+	uiStatusHandler(cfg)(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var body clientResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := body.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data=%#v", body.Data)
+	}
+	if data["blocked"] != true || data["usable"] != false || data["unusable_reason"] != "blocking_window" {
+		t.Fatalf("Data=%#v", data)
+	}
+	if blockers, ok := data["blocking_windows"].([]any); !ok || len(blockers) != 1 {
+		t.Fatalf("blocking_windows=%#v", data["blocking_windows"])
+	}
+}
+
+func writeUIStatusHelperCommand(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	payload := `{"ok":true,"status":{"foreground":false,"title_match":false,"blocking_windows":[{"name":"Windows Security Alert","class_name":"#32770"}]}}`
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "ui-status-helper.cmd")
+		if err := os.WriteFile(path, []byte("@echo off\r\necho "+payload+"\r\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := filepath.Join(dir, "ui-status-helper.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+payload+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestSplitComma(t *testing.T) {

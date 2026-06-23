@@ -280,6 +280,8 @@ POST /api/Operator/PollStatus
 - `usable=false` means the bridge should not send/read yet. `unusable_reason` can be `blocking_window`, `unexpected_chat_title`, or `not_foreground`.
 - `blocking_windows` is preserved so the operator can see which local window needs manual handling.
 
+Use `UiStatus` as the explicit operator/runtime preflight before enabling a poll loop or a real send smoke.
+
 Dry-run the bridge without touching the WeChat UI:
 
 ```powershell
