@@ -22,7 +22,7 @@ try {
 $env:PYTHONIOENCODING = 'utf-8'
 
 if ([string]::IsNullOrWhiteSpace($ExpectTitle)) {
-    $ExpectTitle = [string]::Concat(
+    $ExpectTitle = -join @(
         [char]0x6587,
         [char]0x4ef6,
         [char]0x4f20,
@@ -31,7 +31,7 @@ if ([string]::IsNullOrWhiteSpace($ExpectTitle)) {
         [char]0x624b
     )
 }
-$triggerPrefix = [string]::Concat([char]0x52a9, [char]0x624b, [char]0xff1a)
+$triggerPrefix = -join @([char]0x52a9, [char]0x624b, [char]0xff1a)
 
 function Resolve-GoExe {
     param([string]$Configured)
@@ -85,6 +85,46 @@ function Invoke-CommandStep {
     }
 }
 
+function Assert-PowerShellParse {
+    param([string[]]$Paths)
+
+    foreach ($path in $Paths) {
+        $parseErrors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$null, [ref]$parseErrors) | Out-Null
+        if ($parseErrors) {
+            $parseErrors | Format-List *
+            throw "PowerShell parse failed: $path"
+        }
+    }
+}
+
+function Invoke-JsonPowerShell {
+    param([string[]]$Arguments)
+
+    $rawLines = & powershell -NoProfile -ExecutionPolicy Bypass @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        $rawLines | Write-Host
+        throw "PowerShell command failed with exit code ${LASTEXITCODE}: powershell $($Arguments -join ' ')"
+    }
+    $raw = ($rawLines | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "PowerShell command returned empty output: powershell $($Arguments -join ' ')"
+    }
+    return $raw | ConvertFrom-Json
+}
+
+Invoke-AcceptanceStep 'PowerShell helper parse checks' {
+    Assert-PowerShellParse @(
+        'scripts\wechat_ui_acceptance.ps1',
+        'scripts\wechat_ui_bridge_run.ps1',
+        'scripts\wechat_ui_diagnose.ps1',
+        'scripts\wechat_ui_main_run.ps1',
+        'scripts\wechat_ui_operator_pause.ps1',
+        'scripts\wechat_ui_real_smoke.ps1',
+        'scripts\wechat_ui_stack_status.ps1'
+    )
+}
+
 $go = Resolve-GoExe $GoExe
 $main = Resolve-MainCommand $MainCommand $go
 
@@ -93,6 +133,50 @@ Write-Host "Python: $Python"
 Write-Host "Go: $go"
 Write-Host "Main command: $main"
 Write-Host "Run main E2E: $RunMainE2E"
+
+Invoke-AcceptanceStep 'PowerShell helper safety checks' {
+    $bridge = Invoke-JsonPowerShell @(
+        '-File',
+        '.\scripts\wechat_ui_bridge_run.ps1',
+        '-NoStart',
+        '-PauseWindows',
+        '12:00-13:30'
+    )
+    if ($bridge.bridge_addr -ne '127.0.0.1:3021') {
+        throw "unexpected bridge addr: $($bridge.bridge_addr)"
+    }
+    if (-not $bridge.require_verify) {
+        throw 'bridge launcher must require visible send verification by default'
+    }
+    if ($bridge.operator_pause_windows -ne '12:00-13:30') {
+        throw "unexpected pause window: $($bridge.operator_pause_windows)"
+    }
+
+    $mainConfig = Invoke-JsonPowerShell @(
+        '-File',
+        '.\scripts\wechat_ui_main_run.ps1',
+        '-NoStart'
+    )
+    if ($mainConfig.wechat_server_host -ne '127.0.0.1:3021') {
+        throw "unexpected main WECHAT_SERVER_HOST: $($mainConfig.wechat_server_host)"
+    }
+    if (-not $mainConfig.openclaw_enabled) {
+        throw 'main launcher should enable local OpenClaw by default'
+    }
+
+    $stack = Invoke-JsonPowerShell @(
+        '-File',
+        '.\scripts\wechat_ui_stack_status.ps1',
+        '-TimeoutSeconds',
+        '1'
+    )
+    if ($null -ne $stack.real_ui) {
+        throw 'stack status must not touch real WeChat UI unless -IncludeRealUi is passed'
+    }
+    if ($stack.bridge_url -ne 'http://127.0.0.1:3021') {
+        throw "unexpected stack bridge url: $($stack.bridge_url)"
+    }
+}
 
 Invoke-CommandStep 'python compile smoke and harness' @(
     $Python,
