@@ -223,6 +223,14 @@ To preview the main-service runtime environment without starting it:
 
 The main runner sets `WECHAT_SERVER_HOST=127.0.0.1:3021`, enables OpenClaw by default, points `OPENCLAW_BASE_URL` at the local `cmd/openclaw-bridge`, and keeps the bot name/prefix defaults encoding-safe for Windows PowerShell. It refuses non-loopback WeChat bridge addresses and, unless explicitly overridden, non-loopback OpenClaw URLs.
 
+Check the local UI bridge runtime stack without touching the WeChat UI:
+
+```powershell
+.\scripts\wechat_ui_stack_status.ps1
+```
+
+This checks the UI bridge health/pause/poll endpoints, main-service `is-running`/`is-loggedin`, and OpenClaw bridge health. Add `-IncludeRealUi` only when you want the script to run the read-only WeChat UI diagnostic; add `-IncludeReadiness` only when it is acceptable for the bridge to run its readiness preflight.
+
 ```powershell
 $env:WECHAT_UI_BRIDGE_ADDR='127.0.0.1:3021'
 $env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
