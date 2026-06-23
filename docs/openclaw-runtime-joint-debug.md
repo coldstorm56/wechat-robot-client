@@ -122,3 +122,53 @@ Padx: scan status interaction key missing
 ```
 
 The main service remained healthy (`is-running=true`) but not logged in (`is-loggedin=false`). Continue true private/group chat validation only after replacing `WECHAT_SERVER_HOST` with a currently working and trusted personal WeChat protocol endpoint, or after the `wechat-ipad` image is updated to a login-compatible version.
+
+## 7. New WeChat 4.x UI automation bridge option
+
+On 2026-06-23, WCFerry/go_wcf_http was evaluated as a local bridge option, but that path is not the current main line: the official v39.5.2 runtime depends on classic WeChat 3.9.12.51, and the local classic WeChat login was blocked by a WeChat "version too low" prompt.
+
+The next local-only route is:
+
+```text
+Windows WeChat 4.x at D:\software\Weixin
+  -> local UI Automation smoke/bridge
+  -> wechat-robot-client existing assistant flow
+  -> OpenClaw bridge
+```
+
+This route must keep the login state on this machine. Do not replace it with an untrusted public endpoint, and do not pull an unknown closed protocol image only because it advertises current login support.
+
+Local UI automation preflight:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py inspect
+```
+
+If WeChat is not already running, explicitly allow the script to start the local 4.x client:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py --launch inspect
+```
+
+Send one explicit smoke message to File Transfer Assistant:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py send `
+  --contact '文件传输助手' `
+  --message 'wechat-ui-automation smoke test'
+```
+
+Read the last visible text from the current conversation, or from a named conversation after opening it:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py read-last
+python .\scripts\wechat_ui_smoke.py read-last --contact '文件传输助手'
+```
+
+Safety notes:
+
+- No background polling is enabled by the smoke script.
+- It only focuses WeChat during explicit `send` or `read-last` commands.
+- It restores the previous clipboard text and foreground window by default.
+- Failures are logged to `%TEMP%\wechat-ui-automation-bridge.log` unless `WECHAT_UI_LOG_PATH` overrides it.
+- For daily-use safety, send actions should remain explicit until the bridge has a tested trigger, whitelist, and pause control.
