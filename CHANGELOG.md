@@ -44,6 +44,7 @@
 - Runtime tooling: add a read-only WeChat UI diagnostic helper that summarizes window size, title match, foreground state, blocking windows, and the next manual action before real send/read smoke.
 - Runtime tooling: add a reusable PowerShell WeChat UI bridge launcher that sets encoding-safe defaults, window thresholds, assistant callback URL, and operator takeover windows.
 - Runtime validation: add a gated real WeChat smoke helper that refuses to send unless read-only readiness passes, then verifies visible send and last-text readback.
+- Runtime tooling: add a PowerShell main-service launcher that points the assistant runtime at the local WeChat UI bridge and loopback OpenClaw bridge with encoding-safe bot trigger defaults.
 - Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.
 - Runtime validation: pass the local temporary-main-service assistant-flow E2E check from `sync-message` through mock OpenClaw to mock `/Msg/SendTxt` with reversible local DB preparation.
 - Runtime safety: tighten WeChat UI send verification so a successful send must also match the current conversation's last readable message.

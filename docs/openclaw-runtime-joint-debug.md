@@ -209,6 +209,20 @@ To preview the bridge configuration without starting the process:
 
 The summary prints the matching main-service setting, for example `WECHAT_SERVER_HOST=127.0.0.1:3021`. Use `-MinWindowWidth`/`-MinWindowHeight` if you intentionally change the minimum visible WeChat window threshold, and use `-PauseWindows` for daily human takeover windows.
 
+Start the main service against the UI bridge and local OpenClaw bridge:
+
+```powershell
+.\scripts\wechat_ui_main_run.ps1
+```
+
+To preview the main-service runtime environment without starting it:
+
+```powershell
+.\scripts\wechat_ui_main_run.ps1 -NoStart
+```
+
+The main runner sets `WECHAT_SERVER_HOST=127.0.0.1:3021`, enables OpenClaw by default, points `OPENCLAW_BASE_URL` at the local `cmd/openclaw-bridge`, and keeps the bot name/prefix defaults encoding-safe for Windows PowerShell. It refuses non-loopback WeChat bridge addresses and, unless explicitly overridden, non-loopback OpenClaw URLs.
+
 ```powershell
 $env:WECHAT_UI_BRIDGE_ADDR='127.0.0.1:3021'
 $env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
