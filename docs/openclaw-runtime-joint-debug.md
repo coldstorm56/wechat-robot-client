@@ -212,7 +212,7 @@ $env:WECHAT_UI_POLL_MAX_ERRORS='3'
 go run ./cmd/wechat-ui-bridge
 ```
 
-Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`. These windows are the default "operator takes over" schedule: during that time the bridge may keep running, but polling skips work and send/read operations fail closed without focusing WeChat.
+Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`. These windows are the default "operator takes over" schedule: during that time the bridge may keep running, but polling skips work and send/read operations fail closed without focusing WeChat. UI-touching endpoints return HTTP `423` with `operator pause active`.
 
 For an immediate temporary human takeover without restarting the bridge, prefer the local loopback API:
 

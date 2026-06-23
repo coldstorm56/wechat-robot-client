@@ -201,6 +201,77 @@ func TestWritePauseFileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAutomationHandlersReturnLockedDuringPause(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pause.json")
+	if err := os.WriteFile(path, []byte(`{"paused":true,"reason":"manual takeover"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := bridgeConfig{
+		BotWxID:           "wechat_ui_bot",
+		Python:            "python-that-should-not-run",
+		Script:            "script-that-should-not-run.py",
+		Timeout:           time.Second,
+		OperatorPauseFile: path,
+		AssistantSyncURL:  "http://127.0.0.1:9001/api/v1/wechat-client/wechat_ui_bot/sync-message",
+	}
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		handler http.HandlerFunc
+	}{
+		{
+			name:    "send",
+			path:    "/api/Msg/SendTxt",
+			body:    `{"ToWxid":"filehelper","Content":"hello"}`,
+			handler: sendTextHandler(cfg),
+		},
+		{
+			name:    "read last",
+			path:    "/api/Msg/CurrentLastText",
+			body:    `{}`,
+			handler: readLastTextHandler(cfg),
+		},
+		{
+			name:    "ui status",
+			path:    "/api/Operator/UiStatus",
+			body:    `{}`,
+			handler: uiStatusHandler(cfg),
+		},
+		{
+			name:    "inject",
+			path:    "/api/Operator/InjectCurrentLastText",
+			body:    `{"content":"visible hello"}`,
+			handler: injectCurrentLastTextHandler(cfg),
+		},
+		{
+			name:    "poll",
+			path:    "/api/Operator/PollCurrentLastText",
+			body:    `{"inject":false}`,
+			handler: pollCurrentLastTextHandler(cfg),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			resp := httptest.NewRecorder()
+
+			tc.handler(resp, req)
+
+			if resp.Code != http.StatusLocked {
+				t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+			}
+			var body clientResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Success || body.Code != -2 || body.Message != "operator pause active" {
+				t.Fatalf("body=%#v", body)
+			}
+		})
+	}
+}
+
 func TestBuildSyncMessageCallbackPayload(t *testing.T) {
 	now := time.Unix(1_770_000_000, 123_000_000)
 	payload, msgID := buildSyncMessageCallbackPayload("wechat_ui_bot", "filehelper", "wechat_ui_bot", "hello", "", now)
