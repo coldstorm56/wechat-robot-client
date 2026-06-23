@@ -13,6 +13,7 @@
 - Runtime safety: verify the message editor draft before pressing Enter, so WeChat UI send attempts fail closed before submission when the MMUI editor cannot be focused.
 - Runtime safety: add an expected chat-title guard so current-chat send/read automation refuses to run on the wrong WeChat surface.
 - Protocol bridge: expose a read-only WeChat UI status endpoint with OCR title and title-match state for operator/runtime readiness checks.
+- Runtime safety: add local operator pause set/clear endpoints so a human takeover window can be applied without restarting the WeChat UI bridge.
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.

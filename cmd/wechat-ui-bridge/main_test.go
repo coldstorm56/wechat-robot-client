@@ -98,3 +98,37 @@ func TestPauseFileUntil(t *testing.T) {
 		t.Fatalf("pause should expire: %#v", state)
 	}
 }
+
+func TestBuildPauseFileConfigMinutes(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, loc)
+	cfg, err := buildPauseFileConfig(operatorPauseRequest{
+		Minutes: 30,
+		Reason:  "manual test",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PauseUntil != "2026-06-24T11:00:00+08:00" {
+		t.Fatalf("pause_until=%q", cfg.PauseUntil)
+	}
+	if cfg.Reason != "manual test" {
+		t.Fatalf("reason=%q", cfg.Reason)
+	}
+}
+
+func TestWritePauseFileRoundTrip(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, loc)
+	path := filepath.Join(t.TempDir(), "nested", "pause.json")
+	if err := writePauseFile(path, pauseFileConfig{
+		PauseUntil: "2026-06-24T11:00:00+08:00",
+		Reason:     "manual takeover",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state := pauseStateFromFile(path, now)
+	if !state.Paused || state.Reason != "manual takeover" || state.Until != "2026-06-24T11:00:00+08:00" {
+		t.Fatalf("state=%#v", state)
+	}
+}

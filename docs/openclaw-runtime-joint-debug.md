@@ -179,7 +179,7 @@ OCR notes:
 - `read-last` returns the last OCR-readable visible text in the chat area, not a protocol message object.
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
 - If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
-- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden.
+- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden. Resizing is safe as long as the current chat title, message area, and editor remain visible.
 - For current-chat mode, set an expected visible chat title such as `文件传输助手`; the bridge will fail before touching the editor when WeChat is on a different surface such as Service Accounts, Contacts, or search results.
 
 Safety notes:
@@ -208,7 +208,31 @@ go run ./cmd/wechat-ui-bridge
 
 Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`.
 
-For an immediate temporary human takeover without restarting the bridge:
+For an immediate temporary human takeover without restarting the bridge, prefer the local loopback API:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PauseSet `
+  -ContentType 'application/json' `
+  -Body '{"minutes":30,"reason":"operator takeover"}'
+```
+
+To pause until an exact local/RFC3339 time:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PauseSet `
+  -ContentType 'application/json' `
+  -Body '{"pause_until":"2026-06-24T18:30:00+08:00","reason":"operator takeover"}'
+```
+
+To resume immediately:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseClear
+```
+
+The same dynamic pause can also be controlled by the local pause file:
 
 ```powershell
 $pauseFile = "$env:TEMP\wechat-ui-operator-pause.json"
@@ -233,6 +257,10 @@ POST /api/User/GetContractProfile
 POST /api/Friend/GetContractDetail
 POST /api/Msg/SendTxt
 POST /api/Msg/CurrentLastText
+POST /api/Operator/PauseStatus
+POST /api/Operator/PauseSet
+POST /api/Operator/PauseClear
+POST /api/Operator/UiStatus
 ```
 
 Dry-run the bridge without touching the WeChat UI:
@@ -250,6 +278,11 @@ Bridge smoke checks:
 Invoke-RestMethod http://127.0.0.1:3021/health
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Login/GetCacheInfo
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseStatus
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PauseSet `
+  -ContentType 'application/json' `
+  -Body '{"minutes":5,"reason":"smoke handoff"}'
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseClear
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/UiStatus
 Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:3021/api/Msg/CurrentLastText `

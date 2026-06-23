@@ -85,6 +85,15 @@ type pauseFileConfig struct {
 	Windows    string `json:"windows"`
 }
 
+type operatorPauseRequest struct {
+	Paused     *bool  `json:"paused"`
+	PauseUntil string `json:"pause_until"`
+	Until      string `json:"until"`
+	Reason     string `json:"reason"`
+	Minutes    int    `json:"minutes"`
+	Windows    string `json:"windows"`
+}
+
 func main() {
 	cfg := loadConfig()
 	if err := ensureLoopbackAddr(cfg.Addr); err != nil {
@@ -99,6 +108,8 @@ func main() {
 	mux.HandleFunc("/api"+robot.MsgSendTxt, sendTextHandler(cfg))
 	mux.HandleFunc("/api/Msg/CurrentLastText", readLastTextHandler(cfg))
 	mux.HandleFunc("/api/Operator/PauseStatus", pauseStatusHandler(cfg))
+	mux.HandleFunc("/api/Operator/PauseSet", pauseSetHandler(cfg))
+	mux.HandleFunc("/api/Operator/PauseClear", pauseClearHandler(cfg))
 	mux.HandleFunc("/api/Operator/UiStatus", uiStatusHandler(cfg))
 
 	server := &http.Server{
@@ -169,6 +180,50 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 func pauseStatusHandler(cfg bridgeConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
+			return
+		}
+		writeClientOK(w, currentPauseState(cfg, time.Now()))
+	}
+}
+
+func pauseSetHandler(cfg bridgeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if strings.TrimSpace(cfg.OperatorPauseFile) == "" {
+			writeClientError(w, http.StatusBadRequest, "operator pause file is not configured")
+			return
+		}
+		var req operatorPauseRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeClientError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
+			return
+		}
+		content, err := buildPauseFileConfig(req, time.Now())
+		if err != nil {
+			writeClientError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := writePauseFile(cfg.OperatorPauseFile, content); err != nil {
+			writeClientError(w, http.StatusInternalServerError, fmt.Sprintf("write pause file: %v", err))
+			return
+		}
+		writeClientOK(w, currentPauseState(cfg, time.Now()))
+	}
+}
+
+func pauseClearHandler(cfg bridgeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if strings.TrimSpace(cfg.OperatorPauseFile) == "" {
+			writeClientError(w, http.StatusBadRequest, "operator pause file is not configured")
+			return
+		}
+		if err := os.Remove(cfg.OperatorPauseFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeClientError(w, http.StatusInternalServerError, fmt.Sprintf("clear pause file: %v", err))
 			return
 		}
 		writeClientOK(w, currentPauseState(cfg, time.Now()))
@@ -414,6 +469,55 @@ func currentPauseState(cfg bridgeConfig, now time.Time) pauseState {
 		return state
 	}
 	return pauseState{Paused: false}
+}
+
+func buildPauseFileConfig(req operatorPauseRequest, now time.Time) (pauseFileConfig, error) {
+	cfg := pauseFileConfig{
+		Reason:  strings.TrimSpace(req.Reason),
+		Windows: strings.TrimSpace(req.Windows),
+	}
+	if cfg.Reason == "" {
+		cfg.Reason = "operator takeover"
+	}
+	if req.Minutes < 0 {
+		return pauseFileConfig{}, fmt.Errorf("minutes must be >= 0")
+	}
+	if req.Minutes > 0 {
+		cfg.PauseUntil = now.Add(time.Duration(req.Minutes) * time.Minute).Format(time.RFC3339)
+	}
+	if until := strings.TrimSpace(req.PauseUntil); until != "" {
+		cfg.PauseUntil = until
+	}
+	if until := strings.TrimSpace(req.Until); until != "" {
+		cfg.PauseUntil = until
+	}
+	if cfg.PauseUntil != "" {
+		if _, err := parsePauseUntil(cfg.PauseUntil, now.Location()); err != nil {
+			return pauseFileConfig{}, err
+		}
+	}
+	if cfg.PauseUntil == "" && cfg.Windows == "" {
+		paused := true
+		if req.Paused != nil {
+			paused = *req.Paused
+		}
+		cfg.Paused = paused
+	}
+	return cfg, nil
+}
+
+func writePauseFile(path string, cfg pauseFileConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 func pauseStateFromFile(path string, now time.Time) pauseState {
