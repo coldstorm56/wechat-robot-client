@@ -178,8 +178,21 @@ def find_wechat_window(timeout: float, launch: bool, exe_path: str) -> auto.Cont
 
 
 def activate(ctrl: auto.Control) -> None:
+    ensure_usable_chat_window(ctrl)
     ctrl.SetActive()
     time.sleep(0.5)
+
+
+def ensure_usable_chat_window(ctrl: auto.Control) -> None:
+    rect = ctrl.BoundingRectangle
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    class_name = (ctrl.ClassName or "").lower()
+    if width < 200 or height < 200 or "login" in class_name:
+        raise RuntimeError(
+            "WeChat was found, but it is not a usable chat window. "
+            "Log in to WeChat 4.x and open the main chat window first."
+        )
 
 
 def paste_text(text: str) -> None:
@@ -241,8 +254,20 @@ def read_last_text(ctrl: auto.Control, contact: str | None) -> str:
         "聊天",
         "文件传输助手",
         "搜索",
+        "系统",
+        "最小化",
+        "最大化",
+        "关闭",
+        "MMUIRenderSubWindow",
     }
-    candidates = [text for text in texts if text not in ignored]
+    candidates = [
+        text
+        for text in texts
+        if text not in ignored
+        and not text.endswith(" - 贴图")
+        and not text.endswith(" - 图片")
+        and not text.endswith(" - 文件")
+    ]
     if not candidates:
         raise RuntimeError("no readable text found in current WeChat conversation")
     return candidates[-1]

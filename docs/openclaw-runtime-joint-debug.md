@@ -172,3 +172,50 @@ Safety notes:
 - It restores the previous clipboard text and foreground window by default.
 - Failures are logged to `%TEMP%\wechat-ui-automation-bridge.log` unless `WECHAT_UI_LOG_PATH` overrides it.
 - For daily-use safety, send actions should remain explicit until the bridge has a tested trigger, whitelist, and pause control.
+
+Start the local compatibility bridge:
+
+```powershell
+$env:WECHAT_UI_BRIDGE_ADDR='127.0.0.1:3021'
+$env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
+$env:WECHAT_UI_BOT_NAME='此刻正佳'
+$env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
+go run ./cmd/wechat-ui-bridge
+```
+
+The bridge exposes a minimal old-protocol-compatible subset:
+
+```text
+GET  /health
+POST /api/Login/GetCacheInfo
+POST /api/User/GetContractProfile
+POST /api/Friend/GetContractDetail
+POST /api/Msg/SendTxt
+POST /api/Msg/CurrentLastText
+```
+
+Dry-run the bridge without touching the WeChat UI:
+
+```powershell
+$env:WECHAT_UI_DRY_RUN='true'
+go run ./cmd/wechat-ui-bridge
+```
+
+Bridge smoke checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3021/health
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Login/GetCacheInfo
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Msg/SendTxt `
+  -ContentType 'application/json' `
+  -Body '{"Wxid":"wechat_ui_bot","ToWxid":"filehelper","Content":"wechat-ui bridge smoke"}'
+```
+
+Point the main service at this bridge only after the explicit send/read smoke checks pass:
+
+```powershell
+$env:WECHAT_SERVER_HOST='127.0.0.1:3021'
+```
+
+Current bridge boundary: this first bridge wraps explicit text sending and best-effort visible last-text reads. On the current Windows WeChat 4.x client, UI Automation can send to File Transfer Assistant, but visible message-body reads may fail when WeChat hides the Chromium message subtree behind the Qt/MMUI shell. Continuous incoming-message polling, callback forwarding into `/api/v1/wechat-client/:wxid/sync-message`, group `@` detection, prefix detection, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.
