@@ -438,6 +438,14 @@ For a shorter read-only local diagnosis of why real WeChat send/read is not read
 
 It reports `ready_for_real_send`, window size, title-match state, foreground state, and any `blocking_windows`. It does not send messages or click security prompts. When `ready_for_real_send=false`, follow `next_action` and rerun the diagnostic before attempting a real send smoke.
 
+For the gated real WeChat File Transfer Assistant smoke, run this only after WeChat is on the expected conversation and the diagnostic is ready:
+
+```powershell
+.\scripts\wechat_ui_real_smoke.ps1
+```
+
+This script first runs the read-only diagnostic. If `ready_for_real_send=false`, it exits without sending. If ready, it sends one timestamped `Codex gated real-chat smoke ...` message, requires visible delivery verification, then reads the current conversation's last visible text and requires it to match the sent message. Use `-Message` for a custom smoke string, `-MinWindowWidth`/`-MinWindowHeight` for a controlled resized-window threshold, and reserve `-SkipReadiness` for watched local debugging only.
+
 For the full local main-service path without touching real WeChat, run:
 
 ```powershell
