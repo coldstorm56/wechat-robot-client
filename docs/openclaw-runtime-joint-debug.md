@@ -360,6 +360,39 @@ By default, `PollStart` uses `prime_on_start=true`: the first immediate check re
 
 If the poll loop is allowed to inject (`inject` omitted or `true`), `PollStart` validates `WECHAT_UI_ASSISTANT_SYNC_URL` or request `callback_url` before starting and rejects non-loopback or empty callbacks. For observe-only loops, pass `{"inject":false}`; no callback is required.
 
+Assistant-flow local E2E harness:
+
+```powershell
+python scripts/assistant_flow_e2e.py --self-test
+```
+
+`--self-test` only verifies the harness and its local mock servers. To check the real main service path without touching WeChat, run the harness with local mock OpenClaw and mock WeChat bridge ports, then start the main service inside the delay window:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --inject-delay-seconds 45 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid filehelper `
+  --content "assistant flow e2e smoke" `
+  --reply "OpenClaw mock reply"
+```
+
+In another PowerShell window during the delay:
+
+```powershell
+$env:WECHAT_SERVER_HOST='127.0.0.1:3022'
+$env:OPENCLAW_ENABLED='true'
+$env:OPENCLAW_BASE_URL='http://127.0.0.1:18791/api/assistant/chat'
+$env:BOT_NAME='助手'
+$env:TRIGGER_MODE='at_or_prefix'
+$env:TRIGGER_PREFIX='助手：'
+go run .
+```
+
+The harness posts one `sync-message` callback to `http://127.0.0.1:9001/api/v1/wechat-client/{wechat_id}/sync-message` and waits for the main service to call the mock `/api/Msg/SendTxt`. `--wechat-id` must match the running `vars.RobotRuntime.WxID`; private chat AI or the relevant group whitelist must already be enabled in the local database. If no `/api/Msg/SendTxt` call is observed, check `WECHAT_SERVER_HOST`, `OPENCLAW_BASE_URL`, the active bot wxid, and the AI enablement settings before moving to real WeChat UI acceptance.
+
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 
 ```powershell
