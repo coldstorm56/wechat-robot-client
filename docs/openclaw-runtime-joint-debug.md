@@ -483,7 +483,46 @@ When using a fresh robot database, confirm that `messages` exists before callbac
 
 Use a normal-looking test sender such as `wxid_e2e_friend` for private-chat E2E. `filehelper` is useful for real WeChat UI smoke tests, but the main-service contact classification can treat special built-in accounts as non-friend contacts and skip private AI chat.
 
+For group E2E without touching real WeChat, use a chatroom `from_wxid` and a member `sender_wxid`. When `--prepare-local-db` is active, the harness temporarily enables the chatroom AI whitelist and pre-creates the test group member so the chatroom plugin can pass its pre-action check:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --prepare-local-db `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid room_e2e@chatroom `
+  --to-wxid wechat_ui_bot `
+  --sender-wxid wxid_group_user `
+  --at-wxid wechat_ui_bot `
+  --content "group at assistant flow smoke" `
+  --reply "OpenClaw mock reply group at smoke"
+```
+
+For the `助手：` prefix path, omit `--at-wxid` and include the prefix in `--content`:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --prepare-local-db `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid room_e2e@chatroom `
+  --to-wxid wechat_ui_bot `
+  --sender-wxid wxid_group_user `
+  --content "助手：group prefix assistant flow smoke" `
+  --reply "OpenClaw mock reply group prefix smoke"
+```
+
+The harness verifies `assistant_session_logs.status=success` for both group modes. Prefix-triggered messages are logged after the prefix is removed, so the expected `request_text` for the example above is `group prefix assistant flow smoke`. The DB cleanup removes the temporary chatroom whitelist, group member, contacts, messages, and session logs after the run.
+
 Validated local main-service E2E (2026-06-24): with `--prepare-local-db`, the harness temporarily set `robot_admin.robot.id=27` to `wechat_ui_bot`, enabled global private-chat AI, started a temporary `9002` main service, injected `wxid_e2e_friend`, observed one mock OpenClaw request, captured mock `/api/Msg/SendTxt` with `Content="OpenClaw mock reply cleanup smoke"`, and verified an `assistant_session_logs.status=success` row before cleanup. The DB patch restored the original robot/global-settings values and removed test messages/contacts/session logs after the run.
+
+Validated local group E2E (2026-06-24): with `--prepare-local-db`, the harness temporarily enabled `room_e2e@chatroom`, pre-created `wxid_group_user`, and verified both `@bot` and `助手：` prefix callbacks through mock OpenClaw to mock `/api/Msg/SendTxt`. The observed group send targets were `ToWxid="room_e2e@chatroom"` and `At="wxid_group_user"`, and both runs verified `assistant_session_logs.status=success` before cleanup. A final DB check found zero remaining rows for the test session logs, group member, and chatroom settings.
 
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 

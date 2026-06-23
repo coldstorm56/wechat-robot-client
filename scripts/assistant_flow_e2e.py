@@ -23,6 +23,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def post_json(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, str]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -126,7 +132,21 @@ class LocalDBPatch:
         self.args = args
         self.robot_row: list[str] | None = None
         self.global_row: list[str] | None = None
+        self.chat_room_row: list[str] | None = None
+        self.chat_room_member_row: list[str] | None = None
         self.inserted_global_id: str = ""
+        self.inserted_chat_room_id: str = ""
+        self.inserted_chat_room_member_id: str = ""
+
+    def expected_session_request_text(self) -> str:
+        explicit = strings_trim(self.args.expect_session_request_text)
+        if explicit:
+            return explicit
+        content = strings_trim(self.args.content)
+        prefix = strings_trim(self.args.trigger_prefix)
+        if prefix and content.startswith(prefix):
+            return strings_trim(content[len(prefix):])
+        return self.args.content
 
     def mysql(self, sql: str) -> str:
         cmd = [
@@ -179,6 +199,59 @@ class LocalDBPatch:
                 f"SELECT id FROM {quote_ident(self.args.robot_db)}.global_settings ORDER BY id DESC LIMIT 1;"
             ).strip()
 
+        if self.args.from_wxid.endswith("@chatroom"):
+            chat_room_sql = (
+                "SELECT id, IF(chat_ai_enabled IS NULL, 'NULL', CAST(chat_ai_enabled AS CHAR)) "
+                f"FROM {quote_ident(self.args.robot_db)}.chat_room_settings "
+                f"WHERE chat_room_id={sql_string(self.args.from_wxid)} ORDER BY id LIMIT 1;"
+            )
+            chat_room_out = self.mysql(chat_room_sql)
+            self.chat_room_row = chat_room_out.split("\t") if chat_room_out else None
+            if self.chat_room_row:
+                self.mysql(
+                    f"UPDATE {quote_ident(self.args.robot_db)}.chat_room_settings "
+                    f"SET chat_ai_enabled=1 WHERE id={int(self.chat_room_row[0])};"
+                )
+            else:
+                self.mysql(
+                    f"INSERT INTO {quote_ident(self.args.robot_db)}.chat_room_settings "
+                    "(chat_room_id, chat_ai_enabled, wxhb_notify_member_list) "
+                    f"VALUES ({sql_string(self.args.from_wxid)}, 1, '');"
+                )
+                self.inserted_chat_room_id = self.mysql(
+                    f"SELECT id FROM {quote_ident(self.args.robot_db)}.chat_room_settings "
+                    f"WHERE chat_room_id={sql_string(self.args.from_wxid)} ORDER BY id DESC LIMIT 1;"
+                ).strip()
+            if self.args.sender_wxid:
+                member_sql = (
+                    "SELECT id, CAST(is_blacklisted AS CHAR), IF(is_leaved IS NULL, 'NULL', CAST(is_leaved AS CHAR)) "
+                    f"FROM {quote_ident(self.args.robot_db)}.chat_room_members "
+                    f"WHERE chat_room_id={sql_string(self.args.from_wxid)} "
+                    f"AND wechat_id={sql_string(self.args.sender_wxid)} ORDER BY id LIMIT 1;"
+                )
+                member_out = self.mysql(member_sql)
+                self.chat_room_member_row = member_out.split("\t") if member_out else None
+                if self.chat_room_member_row:
+                    self.mysql(
+                        f"UPDATE {quote_ident(self.args.robot_db)}.chat_room_members "
+                        f"SET is_blacklisted=0, is_leaved=0, last_active_at=UNIX_TIMESTAMP() "
+                        f"WHERE id={int(self.chat_room_member_row[0])};"
+                    )
+                else:
+                    self.mysql(
+                        f"INSERT INTO {quote_ident(self.args.robot_db)}.chat_room_members "
+                        "(chat_room_id, wechat_id, alias, nickname, avatar, inviter_wechat_id, "
+                        "is_admin, is_blacklisted, is_leaved, score, temporary_score, temporary_score_expiry, "
+                        "remark, joined_at, last_active_at) "
+                        f"VALUES ({sql_string(self.args.from_wxid)}, {sql_string(self.args.sender_wxid)}, "
+                        "'', 'E2E Group User', '', '', 0, 0, 0, 0, 0, 0, '', UNIX_TIMESTAMP(), UNIX_TIMESTAMP());"
+                    )
+                    self.inserted_chat_room_member_id = self.mysql(
+                        f"SELECT id FROM {quote_ident(self.args.robot_db)}.chat_room_members "
+                        f"WHERE chat_room_id={sql_string(self.args.from_wxid)} "
+                        f"AND wechat_id={sql_string(self.args.sender_wxid)} ORDER BY id DESC LIMIT 1;"
+                    ).strip()
+
         print(
             json.dumps(
                 {
@@ -186,6 +259,7 @@ class LocalDBPatch:
                     "robot_id": self.args.robot_id,
                     "wechat_id": self.args.wechat_id,
                     "global_chat_ai_enabled": True,
+                    "chat_room_ai_enabled": self.args.from_wxid.endswith("@chatroom"),
                 },
                 ensure_ascii=False,
             ),
@@ -194,9 +268,11 @@ class LocalDBPatch:
 
     def restore(self) -> None:
         errors: list[str] = []
-        for sql in [
+        expected_request_text = self.expected_session_request_text()
+        request_text_values = sorted({self.args.content, expected_request_text})
+        cleanup_sqls = [
             f"DELETE FROM {quote_ident(self.args.robot_db)}.assistant_session_logs "
-            f"WHERE request_text={sql_string(self.args.content)};",
+            f"WHERE request_text IN ({','.join(sql_string(value) for value in request_text_values)});",
             f"DELETE FROM {quote_ident(self.args.robot_db)}.messages "
             f"WHERE from_wxid={sql_string(self.args.from_wxid)} "
             f"AND to_wxid={sql_string(self.args.wechat_id)} "
@@ -207,7 +283,13 @@ class LocalDBPatch:
             f"AND content={sql_string(self.args.reply)};",
             f"DELETE FROM {quote_ident(self.args.robot_db)}.contacts "
             f"WHERE wechat_id={sql_string(self.args.from_wxid)};",
-        ]:
+        ]
+        if self.args.sender_wxid:
+            cleanup_sqls.append(
+                f"DELETE FROM {quote_ident(self.args.robot_db)}.contacts "
+                f"WHERE wechat_id={sql_string(self.args.sender_wxid)};"
+            )
+        for sql in cleanup_sqls:
             try:
                 self.mysql(sql)
             except Exception as exc:  # pragma: no cover - cleanup diagnostics only.
@@ -241,6 +323,44 @@ class LocalDBPatch:
                 )
             except Exception as exc:  # pragma: no cover - restoration diagnostics only.
                 errors.append(str(exc))
+        if self.inserted_chat_room_id:
+            try:
+                self.mysql(
+                    f"DELETE FROM {quote_ident(self.args.robot_db)}.chat_room_settings "
+                    f"WHERE id={int(self.inserted_chat_room_id)};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
+        elif self.chat_room_row is not None:
+            old_value = self.chat_room_row[1] if len(self.chat_room_row) > 1 else "NULL"
+            restore_value = "NULL" if old_value == "NULL" else str(int(old_value))
+            try:
+                self.mysql(
+                    f"UPDATE {quote_ident(self.args.robot_db)}.chat_room_settings "
+                    f"SET chat_ai_enabled={restore_value} WHERE id={int(self.chat_room_row[0])};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
+        if self.inserted_chat_room_member_id:
+            try:
+                self.mysql(
+                    f"DELETE FROM {quote_ident(self.args.robot_db)}.chat_room_members "
+                    f"WHERE id={int(self.inserted_chat_room_member_id)};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
+        elif self.chat_room_member_row is not None:
+            old_blacklisted = self.chat_room_member_row[1] if len(self.chat_room_member_row) > 1 else "0"
+            old_leaved = self.chat_room_member_row[2] if len(self.chat_room_member_row) > 2 else "NULL"
+            restore_leaved = "NULL" if old_leaved == "NULL" else str(int(old_leaved))
+            try:
+                self.mysql(
+                    f"UPDATE {quote_ident(self.args.robot_db)}.chat_room_members "
+                    f"SET is_blacklisted={int(old_blacklisted)}, is_leaved={restore_leaved} "
+                    f"WHERE id={int(self.chat_room_member_row[0])};"
+                )
+            except Exception as exc:  # pragma: no cover - restoration diagnostics only.
+                errors.append(str(exc))
         print(
             json.dumps(
                 {"local_db_patch": "restored", "errors": errors},
@@ -258,7 +378,7 @@ class LocalDBPatch:
             "'request_text', COALESCE(request_text,''), "
             "'openclaw_url', COALESCE(openclaw_url,'')) "
             f"FROM {quote_ident(self.args.robot_db)}.assistant_session_logs "
-            f"WHERE request_text={sql_string(self.args.content)} "
+            f"WHERE request_text={sql_string(self.expected_session_request_text())} "
             "ORDER BY id DESC LIMIT 1;"
         )
         if not raw:
@@ -283,6 +403,10 @@ def quote_ident(value: str) -> str:
 
 def sql_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def strings_trim(value: str) -> str:
+    return str(value or "").strip()
 
 
 def make_openclaw_handler(recorder: Recorder, reply: str) -> type[BaseHTTPRequestHandler]:
@@ -594,6 +718,7 @@ def run_smoke(args: argparse.Namespace, recorder: Recorder, main_url: str) -> in
 
 
 def main() -> int:
+    configure_stdio()
     parser = argparse.ArgumentParser(description="Smoke-test the assistant flow against local mocks.")
     parser.add_argument("--main-url", default="http://127.0.0.1:9001")
     parser.add_argument("--main-port", type=int, default=9002)
@@ -634,6 +759,11 @@ def main() -> int:
     parser.add_argument("--bot-name", default="助手")
     parser.add_argument("--trigger-mode", default="at_or_prefix")
     parser.add_argument("--trigger-prefix", default="助手：")
+    parser.add_argument(
+        "--expect-session-request-text",
+        default="",
+        help="optional assistant_session_logs.request_text override; defaults to content with trigger prefix removed",
+    )
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--wait-reply-seconds", type=float, default=20.0)
     parser.add_argument("--inject-delay-seconds", type=float, default=0.0)
