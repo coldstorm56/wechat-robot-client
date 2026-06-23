@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -597,11 +598,11 @@ func TestPollRunnerStartStopRunsImmediately(t *testing.T) {
 		AssistantSyncURL: callback.URL + "/api/v1/wechat-client/wechat_ui_bot/sync-message",
 		InjectDedupeTTL:  time.Minute,
 	}
-	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), false); err != nil {
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), false, 3); err != nil {
 		t.Fatal(err)
 	}
 	defer runner.Stop()
-	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), false); err == nil {
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), false, 3); err == nil {
 		t.Fatal("expected duplicate start to fail")
 	}
 	waitFor(t, time.Second, func() bool {
@@ -764,7 +765,7 @@ func TestPollRunnerSkipsDuringPause(t *testing.T) {
 		Timeout:           time.Second,
 		OperatorPauseFile: path,
 	}
-	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), true); err != nil {
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{}, normalizePollInterval(1), true, 3); err != nil {
 		t.Fatal(err)
 	}
 	defer runner.Stop()
@@ -780,6 +781,32 @@ func TestPollRunnerSkipsDuringPause(t *testing.T) {
 	}
 }
 
+func TestPollRunnerStopsAfterMaxErrors(t *testing.T) {
+	oldReader := readVisibleText
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "", "", errors.New("read failed")
+	}
+	defer func() { readVisibleText = oldReader }()
+
+	runner := newPollRunner()
+	cfg := bridgeConfig{BotWxID: "wechat_ui_bot", Timeout: time.Second}
+	if err := runner.Start(cfg, pollCurrentLastTextRequest{Inject: boolPtr(false)}, normalizePollInterval(1), false, 1); err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Stop()
+
+	waitFor(t, time.Second, func() bool {
+		return runner.Status()["run_count"].(int) >= 1 && !runner.Status()["running"].(bool)
+	})
+	status := runner.Status()
+	if got := status["error_count"].(int); got != 1 {
+		t.Fatalf("error_count=%d", got)
+	}
+	if got := status["stop_reason"].(string); !strings.Contains(got, "max consecutive") {
+		t.Fatalf("stop_reason=%q", got)
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -790,4 +817,8 @@ func waitFor(t *testing.T, timeout time.Duration, ok func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

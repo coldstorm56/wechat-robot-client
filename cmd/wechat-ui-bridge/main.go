@@ -42,6 +42,7 @@ type bridgeConfig struct {
 	AssistantSyncURL     string
 	InjectDedupeTTL      time.Duration
 	OutgoingEchoTTL      time.Duration
+	MaxPollErrors        int
 }
 
 type clientResponse struct {
@@ -109,6 +110,7 @@ type pollLoopStartRequest struct {
 	Inject          *bool  `json:"inject"`
 	PrimeOnStart    *bool  `json:"prime_on_start"`
 	IntervalSeconds int    `json:"interval_seconds"`
+	MaxErrors       *int   `json:"max_errors"`
 }
 
 type syncMessageBuildOptions struct {
@@ -208,7 +210,12 @@ func loadConfig() bridgeConfig {
 	assistantSyncURL := flag.String("assistant-sync-url", envString("WECHAT_UI_ASSISTANT_SYNC_URL", ""), "optional loopback main-service sync-message callback URL")
 	injectDedupeSeconds := flag.Int("inject-dedupe-seconds", envInt("WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS", 120), "suppress duplicate injected visible messages for this many seconds")
 	outgoingEchoSeconds := flag.Int("outgoing-echo-seconds", envInt("WECHAT_UI_OUTGOING_ECHO_TTL_SECONDS", 300), "suppress poll injection for recently sent visible text for this many seconds")
+	maxPollErrors := flag.Int("poll-max-errors", envInt("WECHAT_UI_POLL_MAX_ERRORS", 3), "stop the poll loop after this many consecutive errors; 0 disables the fuse")
 	flag.Parse()
+	maxPollErrorsValue := *maxPollErrors
+	if maxPollErrorsValue < 0 {
+		maxPollErrorsValue = 0
+	}
 
 	return bridgeConfig{
 		Addr:                 strings.TrimSpace(*addr),
@@ -227,6 +234,7 @@ func loadConfig() bridgeConfig {
 		AssistantSyncURL:     strings.TrimSpace(*assistantSyncURL),
 		InjectDedupeTTL:      time.Duration(*injectDedupeSeconds) * time.Second,
 		OutgoingEchoTTL:      time.Duration(*outgoingEchoSeconds) * time.Second,
+		MaxPollErrors:        maxPollErrorsValue,
 	}
 }
 
@@ -249,6 +257,7 @@ func healthHandler(cfg bridgeConfig) http.HandlerFunc {
 			"assistant_sync_url":     cfg.AssistantSyncURL,
 			"inject_dedupe_seconds":  int(cfg.InjectDedupeTTL.Seconds()),
 			"outgoing_echo_seconds":  int(cfg.OutgoingEchoTTL.Seconds()),
+			"poll_max_errors":        cfg.MaxPollErrors,
 			"poll_loop":              backgroundPoller.Status(),
 		})
 	}
@@ -717,7 +726,11 @@ func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
 			writeClientError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := runner.Start(cfg, pollReq, interval, prime); err != nil {
+		maxErrors := cfg.MaxPollErrors
+		if req.MaxErrors != nil {
+			maxErrors = *req.MaxErrors
+		}
+		if err := runner.Start(cfg, pollReq, interval, prime, maxErrors); err != nil {
 			writeClientError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -787,16 +800,19 @@ type recentTextStore struct {
 }
 
 type pollRunner struct {
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	running   bool
-	interval  time.Duration
-	request   pollCurrentLastTextRequest
-	prime     bool
-	lastRun   string
-	lastError string
-	lastState map[string]any
-	runCount  int
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	running    bool
+	interval   time.Duration
+	request    pollCurrentLastTextRequest
+	prime      bool
+	lastRun    string
+	lastError  string
+	lastState  map[string]any
+	runCount   int
+	maxErrors  int
+	errorCount int
+	stopReason string
 }
 
 func newDedupeStore() *dedupeStore {
@@ -849,11 +865,14 @@ func pollRequestWithInject(req pollCurrentLastTextRequest, inject bool) pollCurr
 	return req
 }
 
-func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration, prime bool) error {
+func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, interval time.Duration, prime bool, maxErrors int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.running {
 		return errors.New("poll loop already running")
+	}
+	if maxErrors < 0 {
+		maxErrors = 0
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
@@ -863,15 +882,26 @@ func (p *pollRunner) Start(cfg bridgeConfig, req pollCurrentLastTextRequest, int
 	p.prime = prime
 	p.lastError = ""
 	p.lastState = nil
+	p.runCount = 0
+	p.maxErrors = maxErrors
+	p.errorCount = 0
+	p.stopReason = ""
 	go p.loop(ctx, cfg, req, interval, prime)
 	return nil
 }
 
 func (p *pollRunner) Stop() {
+	p.stopWithReason("")
+}
+
+func (p *pollRunner) stopWithReason(reason string) {
 	p.mu.Lock()
 	cancel := p.cancel
 	p.cancel = nil
 	p.running = false
+	if strings.TrimSpace(reason) != "" {
+		p.stopReason = strings.TrimSpace(reason)
+	}
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -890,6 +920,9 @@ func (p *pollRunner) Status() map[string]any {
 		"last_error":       p.lastError,
 		"last_state":       p.lastState,
 		"run_count":        p.runCount,
+		"max_errors":       p.maxErrors,
+		"error_count":      p.errorCount,
+		"stop_reason":      p.stopReason,
 	}
 }
 
@@ -926,7 +959,9 @@ func (p *pollRunner) runOnce(parent context.Context, cfg bridgeConfig, req pollC
 	defer cancel()
 	result, status, err := pollCurrentLastText(ctx, cfg, req)
 	if err != nil {
-		p.recordPollResult(now, map[string]any{"status_code": status, "prime": prime}, err.Error())
+		if p.recordPollResult(now, map[string]any{"status_code": status, "prime": prime}, err.Error()) {
+			p.stopWithReason("max consecutive poll errors reached")
+		}
 		return
 	}
 	result["status_code"] = status
@@ -934,13 +969,19 @@ func (p *pollRunner) runOnce(parent context.Context, cfg bridgeConfig, req pollC
 	p.recordPollResult(now, result, "")
 }
 
-func (p *pollRunner) recordPollResult(now time.Time, state map[string]any, err string) {
+func (p *pollRunner) recordPollResult(now time.Time, state map[string]any, err string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lastRun = now.Format(time.RFC3339)
 	p.lastState = state
 	p.lastError = err
 	p.runCount++
+	if err == "" {
+		p.errorCount = 0
+		return false
+	}
+	p.errorCount++
+	return p.maxErrors > 0 && p.errorCount >= p.maxErrors
 }
 
 func (s *dedupeStore) TryReserve(key string, now time.Time, ttl time.Duration) bool {

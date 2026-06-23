@@ -22,6 +22,7 @@
 - Runtime safety: make the WeChat UI poll loop prime the current visible text on startup by default, avoiding immediate replies to stale on-screen messages.
 - Protocol bridge: support group-shaped WeChat UI callback payloads with `sender_wxid` and `at_bot` metadata so existing group trigger logic can be exercised through the UI bridge.
 - Runtime safety: validate injecting poll-loop callback configuration before startup, while still allowing observe-only polling without a callback.
+- Runtime safety: stop the WeChat UI poll loop after consecutive read/inject errors by default, reducing repeated focus/OCR attempts during window-size or operator handoff conflicts.
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.

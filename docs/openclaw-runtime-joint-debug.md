@@ -206,6 +206,7 @@ $env:WECHAT_UI_OPERATOR_PAUSE_FILE="$env:TEMP\wechat-ui-operator-pause.json"
 $env:WECHAT_UI_ASSISTANT_SYNC_URL='http://127.0.0.1:9001/api/v1/wechat-client/wechat_ui_bot/sync-message'
 $env:WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS='120'
 $env:WECHAT_UI_OUTGOING_ECHO_TTL_SECONDS='300'
+$env:WECHAT_UI_POLL_MAX_ERRORS='3'
 go run ./cmd/wechat-ui-bridge
 ```
 
@@ -352,6 +353,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PollStop
 ```
 
 The poll loop is never started by default. `PollStart` runs one check immediately and then repeats at a low frequency; intervals below 30 seconds are clamped to 30 seconds. During operator takeover pause windows or a dynamic pause file, the loop records a skipped state and does not read or focus the WeChat window.
+
+By default, the loop stops itself after 3 consecutive poll errors (`WECHAT_UI_POLL_MAX_ERRORS=3`). This prevents repeated focus/OCR attempts when the WeChat window is too small, hidden, on the wrong page, or otherwise unreadable. Pass `{"max_errors":0}` only for controlled debugging when the operator is watching the desktop.
 
 By default, `PollStart` uses `prime_on_start=true`: the first immediate check records the current visible last text as the baseline with `inject=false`, so the bridge does not reply to an old message that was already on screen before polling started. Pass `{"prime_on_start":false}` only for a controlled smoke test where the current visible text should be injected immediately.
 
