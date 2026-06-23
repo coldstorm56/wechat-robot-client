@@ -416,6 +416,14 @@ WeChat UI acceptance runner:
 
 The default runner compiles the Python smoke/harness scripts, runs `go test ./cmd/wechat-ui-bridge -count=1`, runs the assistant-flow harness self-test, and reads the real WeChat UI status without sending a message. Use this after small bridge changes or before attempting a real send. If the status output contains `blocking_windows`, handle that local dialog manually before real WeChat acceptance.
 
+For a shorter read-only local diagnosis of why real WeChat send/read is not ready, run:
+
+```powershell
+.\scripts\wechat_ui_diagnose.ps1
+```
+
+It reports `ready_for_real_send`, window size, title-match state, foreground state, and any `blocking_windows`. It does not send messages or click security prompts. When `ready_for_real_send=false`, follow `next_action` and rerun the diagnostic before attempting a real send smoke.
+
 For the full local main-service path without touching real WeChat, run:
 
 ```powershell
