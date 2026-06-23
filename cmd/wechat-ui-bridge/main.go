@@ -713,6 +713,10 @@ func pollStartHandler(cfg bridgeConfig, runner *pollRunner) http.HandlerFunc {
 		if req.PrimeOnStart != nil {
 			prime = *req.PrimeOnStart
 		}
+		if err := validatePollStartCallback(cfg, pollReq); err != nil {
+			writeClientError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := runner.Start(cfg, pollReq, interval, prime); err != nil {
 			writeClientError(w, http.StatusConflict, err.Error())
 			return
@@ -820,6 +824,24 @@ func normalizePollInterval(seconds int) time.Duration {
 		return 30 * time.Second
 	}
 	return interval
+}
+
+func validatePollStartCallback(cfg bridgeConfig, req pollCurrentLastTextRequest) error {
+	shouldInject := true
+	if req.Inject != nil {
+		shouldInject = *req.Inject
+	}
+	if !shouldInject {
+		return nil
+	}
+	callbackURL := firstNonEmpty(req.CallbackURL, cfg.AssistantSyncURL)
+	if callbackURL == "" {
+		return errors.New("callback_url or WECHAT_UI_ASSISTANT_SYNC_URL is required before starting an injecting poll loop")
+	}
+	if err := ensureLoopbackURL(callbackURL); err != nil {
+		return err
+	}
+	return nil
 }
 
 func pollRequestWithInject(req pollCurrentLastTextRequest, inject bool) pollCurrentLastTextRequest {

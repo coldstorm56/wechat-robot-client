@@ -706,6 +706,45 @@ func TestPollStartHandlerCanDisablePrime(t *testing.T) {
 	}
 }
 
+func TestPollStartHandlerRejectsInjectingLoopWithoutCallback(t *testing.T) {
+	runner := newPollRunner()
+	cfg := bridgeConfig{BotWxID: "wechat_ui_bot", Timeout: time.Second}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":60}`))
+	resp := httptest.NewRecorder()
+
+	pollStartHandler(cfg, runner)(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if runner.Status()["running"].(bool) {
+		t.Fatal("runner should not start")
+	}
+}
+
+func TestPollStartHandlerAllowsObserveLoopWithoutCallback(t *testing.T) {
+	oldReader := readVisibleText
+	readVisibleText = func(context.Context, bridgeConfig, readLastRequest) (string, string, error) {
+		return "observe baseline", "", nil
+	}
+	defer func() { readVisibleText = oldReader }()
+
+	runner := newPollRunner()
+	cfg := bridgeConfig{BotWxID: "wechat_ui_bot", Timeout: time.Second}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/PollStart", strings.NewReader(`{"interval_seconds":60,"inject":false}`))
+	resp := httptest.NewRecorder()
+
+	pollStartHandler(cfg, runner)(resp, req)
+	defer runner.Stop()
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !runner.Status()["running"].(bool) {
+		t.Fatal("runner should start")
+	}
+}
+
 func TestPollRunnerSkipsDuringPause(t *testing.T) {
 	oldReader := readVisibleText
 	var readCount int32

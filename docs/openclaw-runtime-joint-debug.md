@@ -355,6 +355,8 @@ The poll loop is never started by default. `PollStart` runs one check immediatel
 
 By default, `PollStart` uses `prime_on_start=true`: the first immediate check records the current visible last text as the baseline with `inject=false`, so the bridge does not reply to an old message that was already on screen before polling started. Pass `{"prime_on_start":false}` only for a controlled smoke test where the current visible text should be injected immediately.
 
+If the poll loop is allowed to inject (`inject` omitted or `true`), `PollStart` validates `WECHAT_UI_ASSISTANT_SYNC_URL` or request `callback_url` before starting and rejects non-loopback or empty callbacks. For observe-only loops, pass `{"inject":false}`; no callback is required.
+
 Point the main service at this bridge only after the explicit send/read smoke checks pass:
 
 ```powershell
