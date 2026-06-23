@@ -150,7 +150,7 @@ If WeChat is not already running, explicitly allow the script to start the local
 python .\scripts\wechat_ui_smoke.py --launch inspect
 ```
 
-Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first. The command returns `ok=true` only after local screenshot OCR reads the submitted text from the visible WeChat chat area; if visible delivery cannot be verified, treat the send as unproven even if the keyboard sequence ran.
+Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first. The command first requires local screenshot OCR to see the draft in the message editor before pressing Enter, then returns `ok=true` only after local screenshot OCR reads the submitted text from the visible WeChat chat area. If the editor draft or visible delivery cannot be verified, treat the send as unproven.
 
 ```powershell
 python .\scripts\wechat_ui_smoke.py send `
@@ -178,7 +178,7 @@ OCR notes:
 - Use distinct ASCII smoke text for verification because OCR can normalize or drop spaces.
 - `read-last` returns the last OCR-readable visible text in the chat area, not a protocol message object.
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
-- If a send attempt fails and OCR still shows only older messages, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
+- If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
 - Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; avoid making it so narrow that the chat list, message area, or editor are compressed or hidden.
 
 Safety notes:

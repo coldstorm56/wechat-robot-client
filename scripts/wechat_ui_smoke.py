@@ -310,7 +310,13 @@ def open_contact(ctrl: auto.Control, contact: str) -> None:
     time.sleep(0.8)
 
 
-def send_text(ctrl: auto.Control, contact: str, message: str) -> None:
+def send_text(
+    ctrl: auto.Control,
+    contact: str,
+    message: str,
+    verify_editor: bool,
+    editor_verify_timeout: float,
+) -> str:
     if contact:
         open_contact(ctrl, contact)
     else:
@@ -318,8 +324,31 @@ def send_text(ctrl: auto.Control, contact: str, message: str) -> None:
     click_message_input(ctrl)
     paste_text(message)
     time.sleep(0.2)
+    editor_text = ""
+    if verify_editor:
+        editor_text = verify_editor_draft(ctrl, message, editor_verify_timeout)
     auto.SendKeys("{Enter}", waitTime=0.05)
     logging.info("submitted text via UI automation contact=%r length=%d", contact or "<current>", len(message))
+    return editor_text
+
+
+def verify_editor_draft(ctrl: auto.Control, expected: str, timeout: float) -> str:
+    deadline = time.time() + timeout
+    last_error = ""
+    normalized_expected = normalize_for_match(expected)
+    while time.time() < deadline:
+        try:
+            text = "\n".join(ocr_editor_texts(ctrl))
+            if normalized_expected and normalized_expected in normalize_for_match(text):
+                return text
+            last_error = f"OCR editor text did not contain draft: {text[-300:]!r}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(0.3)
+    with contextlib.suppress(Exception):
+        auto.SendKeys("{Ctrl}a", waitTime=0.05)
+        auto.SendKeys("{Back}", waitTime=0.05)
+    raise RuntimeError(f"message draft did not reach the WeChat editor; Enter was not pressed: {last_error}")
 
 
 def verify_visible_message(ctrl: auto.Control, expected: str, timeout: float) -> str:
@@ -380,6 +409,23 @@ def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
             top + int(height * 0.11),
             right - int(width * 0.02),
             bottom - int(height * 0.28),
+        )
+    )
+
+
+def ocr_editor_texts(ctrl: auto.Control) -> list[str]:
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    if hwnd and win32gui.GetForegroundWindow() != hwnd:
+        raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered editor area")
+    left, top, right, bottom = screenshot_rect(ctrl)
+    width = right - left
+    height = bottom - top
+    return ocr_rect_texts(
+        (
+            left + int(width * 0.30),
+            top + int(height * 0.72),
+            right - int(width * 0.02),
+            bottom - int(height * 0.02),
         )
     )
 
@@ -469,7 +515,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 def cmd_send(args: argparse.Namespace) -> int:
     with preserved_desktop_state(restore_window=not args.keep_focus):
         window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
-        send_text(window, args.contact, args.message)
+        draft_text = send_text(
+            window,
+            args.contact,
+            args.message,
+            args.verify_editor,
+            args.editor_verify_timeout,
+        )
         verified_text = ""
         if args.verify:
             verified_text = verify_visible_message(window, args.message, args.verify_timeout)
@@ -478,6 +530,8 @@ def cmd_send(args: argparse.Namespace) -> int:
             "ok": True,
             "contact": args.contact,
             "submitted": args.message,
+            "draft_status": "editor_verified" if args.verify_editor else "editor_unverified",
+            "draft_text": draft_text,
             "delivery_status": "visible_verified" if args.verify else "submitted_unverified",
             "verified_text": verified_text,
         }
@@ -509,6 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--message", required=True)
     send.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True, help="require the submitted text to become visible before returning ok")
     send.add_argument("--verify-timeout", type=float, default=5)
+    send.add_argument("--verify-editor", action=argparse.BooleanOptionalAction, default=True, help="require the draft to be visible in the message editor before pressing Enter")
+    send.add_argument("--editor-verify-timeout", type=float, default=3)
     send.set_defaults(func=cmd_send)
 
     read_last = sub.add_parser("read-last", help="read the last visible text from a conversation")
