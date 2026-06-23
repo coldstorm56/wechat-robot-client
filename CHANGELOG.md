@@ -31,6 +31,7 @@
 - Protocol bridge: add `/api/Operator/Readiness` as a combined pause/UI/poll preflight endpoint; it avoids touching WeChat while an operator pause is active.
 - Runtime safety: return structured `blocking_window` errors from WeChat UI send/read script failures and map them to HTTP 409 in the bridge.
 - Runtime validation: make the assistant-flow E2E harness verify `assistant_session_logs.status=success` and expected `reply_text` before local DB cleanup.
+- Runtime safety: log AI reply send failures from the assistant plugin so WeChat UI bridge errors such as `blocking_window` are visible in the main service logs.
 - Runtime validation: add a local assistant-flow E2E harness with mock OpenClaw and mock WeChat bridge endpoints to verify the 9001 `sync-message` to `/Msg/SendTxt` path before real WeChat UI acceptance.
 - Runtime validation: let the assistant-flow E2E harness start an isolated temporary main service and report callback/preflight diagnostics when active robot wxid or AI enablement prerequisites are not satisfied.
 - Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.

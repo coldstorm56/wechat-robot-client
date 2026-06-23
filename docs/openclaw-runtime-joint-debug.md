@@ -287,6 +287,8 @@ Use `UiStatus` as the explicit operator/runtime preflight before enabling a poll
 
 When send/read automation is attempted while a known blocking window covers WeChat, the smoke script returns `error_code=blocking_window`; the bridge maps that to HTTP `409` and preserves `blocking_windows` in the response data.
 
+Main-service assistant replies now log send failures from the AI chat plugin. If OpenClaw returns a reply but the WeChat UI bridge refuses delivery, look for `[AIChat] 发送 AI 回复失败` in the main-service log together with the bridge error text.
+
 Dry-run the bridge without touching the WeChat UI:
 
 ```powershell
