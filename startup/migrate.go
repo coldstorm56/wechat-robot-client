@@ -41,6 +41,16 @@ func autoMigrateTasks() []migrateTask {
 				&model.SystemPrompt{},
 				&model.Contact{},
 				&model.AssistantSessionLog{},
+				&model.MCPServer{},
+			},
+		},
+		{
+			name: "robot_admin",
+			db: func() *gorm.DB {
+				return vars.AdminDB
+			},
+			models: []any{
+				&model.RobotAdmin{},
 			},
 		},
 	}

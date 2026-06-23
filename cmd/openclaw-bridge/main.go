@@ -184,7 +184,7 @@ func callOpenClawAgent(parent context.Context, cfg bridgeConfig, payload assista
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	output, err := cmd.CombinedOutput()
+	output, err := cmd.Output()
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
@@ -198,6 +198,9 @@ func callOpenClawAgent(parent context.Context, cfg bridgeConfig, payload assista
 
 	var parsed agentResponse
 	if err := json.Unmarshal(output, &parsed); err != nil {
+		if text := extractPlainTextReply(output); text != "" {
+			return text, nil
+		}
 		return "", fmt.Errorf("parse openclaw agent response: %w", err)
 	}
 	if parsed.Status != "" && parsed.Status != "ok" {
@@ -215,6 +218,23 @@ func callOpenClawAgent(parent context.Context, cfg bridgeConfig, payload assista
 		return text, nil
 	}
 	return "", errors.New("openclaw agent returned empty reply")
+}
+
+func extractPlainTextReply(output []byte) string {
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return ""
+	}
+
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "│") || strings.HasPrefix(line, "◇") || strings.HasPrefix(line, "├") {
+			continue
+		}
+		return line
+	}
+	return text
 }
 
 func buildPrompt(payload assistantRequest, currentMessage string) string {

@@ -3,6 +3,7 @@
 ## [Unreleased] - 2026/06/22
 
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
+- Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 
 ### 新功能
 

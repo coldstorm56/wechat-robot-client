@@ -43,3 +43,16 @@ func TestShellJoinQuotesArgs(t *testing.T) {
 		t.Fatalf("unexpected shell command %q", got)
 	}
 }
+
+func TestExtractPlainTextReplySkipsOpenClawWarnings(t *testing.T) {
+	output := []byte(`│
+◇  Config warnings ─────────────────────────────╮
+│  - plugin warning                             │
+├───────────────────────────────────────────────╯
+您好，请问有什么可以帮您的？`)
+
+	got := extractPlainTextReply(output)
+	if got != "您好，请问有什么可以帮您的？" {
+		t.Fatalf("unexpected plain text reply %q", got)
+	}
+}
