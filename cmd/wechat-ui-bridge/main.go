@@ -67,6 +67,7 @@ type scriptOutput struct {
 	Error          string `json:"error"`
 	LastText       string `json:"last_text"`
 	DeliveryStatus string `json:"delivery_status"`
+	Status         any    `json:"status"`
 }
 
 type pauseState struct {
@@ -98,6 +99,7 @@ func main() {
 	mux.HandleFunc("/api"+robot.MsgSendTxt, sendTextHandler(cfg))
 	mux.HandleFunc("/api/Msg/CurrentLastText", readLastTextHandler(cfg))
 	mux.HandleFunc("/api/Operator/PauseStatus", pauseStatusHandler(cfg))
+	mux.HandleFunc("/api/Operator/UiStatus", uiStatusHandler(cfg))
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -170,6 +172,27 @@ func pauseStatusHandler(cfg bridgeConfig) http.HandlerFunc {
 			return
 		}
 		writeClientOK(w, currentPauseState(cfg, time.Now()))
+	}
+}
+
+func uiStatusHandler(cfg bridgeConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !allowAutomationNow(w, cfg) {
+			return
+		}
+		args := []string{"status"}
+		if cfg.ExpectChatTitle != "" {
+			args = append(args, "--expect-title", cfg.ExpectChatTitle)
+		}
+		output, err := runScript(r.Context(), cfg, args...)
+		if err != nil {
+			writeClientError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeClientOK(w, output.Status)
 	}
 }
 

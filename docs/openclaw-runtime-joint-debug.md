@@ -250,6 +250,7 @@ Bridge smoke checks:
 Invoke-RestMethod http://127.0.0.1:3021/health
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Login/GetCacheInfo
 Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseStatus
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/UiStatus
 Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:3021/api/Msg/CurrentLastText `
   -ContentType 'application/json' `

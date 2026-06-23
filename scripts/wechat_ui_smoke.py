@@ -56,6 +56,15 @@ class WindowInfo:
     rect: str
 
 
+@dataclass
+class UIStatus:
+    window: WindowInfo
+    title_text: str
+    title_match: bool | None
+    chat_text_sample: list[str]
+    foreground: bool
+
+
 def configure_logging() -> None:
     log_path = os.environ.get(
         "WECHAT_UI_LOG_PATH",
@@ -386,6 +395,26 @@ def verify_conversation_title(ctrl: auto.Control, expected: str) -> str:
     raise RuntimeError(f"current WeChat conversation title did not match {expected!r}: {text!r}")
 
 
+def read_ui_status(ctrl: auto.Control, expected_title: str | None) -> UIStatus:
+    activate(ctrl)
+    title_texts = ocr_title_texts(ctrl)
+    title_text = "\n".join(title_texts)
+    title_match = None
+    if expected_title:
+        title_match = contains_normalized(title_text, expected_title)
+    chat_texts: list[str] = []
+    with contextlib.suppress(Exception):
+        chat_texts = ocr_chat_texts(ctrl)[-12:]
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    return UIStatus(
+        window=describe_window(ctrl),
+        title_text=title_text,
+        title_match=title_match,
+        chat_text_sample=chat_texts,
+        foreground=bool(hwnd and win32gui.GetForegroundWindow() == hwnd),
+    )
+
+
 def ocr_rect_texts(rect: tuple[int, int, int, int]) -> list[str]:
     try:
         from rapidocr import RapidOCR
@@ -546,6 +575,20 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0 if windows else 1
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    with preserved_desktop_state(restore_window=not args.keep_focus):
+        window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
+        status = read_ui_status(window, args.expect_title)
+    json_print(
+        {
+            "ok": True,
+            "status": asdict(status),
+            "expected_title": args.expect_title,
+        }
+    )
+    return 0
+
+
 def cmd_send(args: argparse.Namespace) -> int:
     with preserved_desktop_state(restore_window=not args.keep_focus):
         window = find_wechat_window(args.timeout, args.launch, args.wechat_exe)
@@ -592,6 +635,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect = sub.add_parser("inspect", help="list detected WeChat UIA windows")
     inspect.set_defaults(func=cmd_inspect)
+
+    status = sub.add_parser("status", help="read current WeChat UI state without touching the editor")
+    status.add_argument("--expect-title", default=None)
+    status.set_defaults(func=cmd_status)
 
     send = sub.add_parser("send", help="send a text message through the WeChat UI")
     send.add_argument("--contact", default=None, help="experimental: navigate by contact name before sending")
