@@ -2,6 +2,8 @@
 
 ## [Unreleased] - 2026/06/22
 
+- Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
+
 ### 新功能
 
 - 阶段 1：新增 OpenClaw 助理 MVP 的运行时配置、环境变量示例和 HTTP Adapter，默认关闭以保持现有 AI 路径不变。

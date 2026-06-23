@@ -1,0 +1,12 @@
+services:
+  wechat-admin-redis:
+    ports:
+      - "6379:6379"
+
+  wechat-admin-mysql:
+    ports:
+      - "3306:3306"
+
+  wechat-server:
+    ports:
+      - "8090:3000"
