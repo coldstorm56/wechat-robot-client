@@ -430,6 +430,25 @@ python scripts/assistant_flow_e2e.py `
 
 When `--prepare-local-db` is active, the harness verifies `assistant_session_logs` by default before cleanup. A passing run prints `assistant_session_log=verified` with a `success` row whose `reply_text` contains the expected mock OpenClaw reply. Pass `--no-verify-session-log` only for focused diagnostics when the local database is intentionally unavailable.
 
+To verify the failure-observability path without touching real WeChat, make the mock WeChat bridge refuse `/api/Msg/SendTxt` with the same `blocking_window` shape used by the UI bridge, and require the temporary main-service log to contain that text:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --prepare-local-db `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid wxid_e2e_friend `
+  --content "assistant flow send error smoke" `
+  --reply "OpenClaw mock reply send error smoke" `
+  --mock-wechat-send-error blocking_window `
+  --expect-main-log-text "blocking_window"
+```
+
+This run still proves the main-service `sync-message -> OpenClaw -> SendTxt` path reached a send attempt, but the mock bridge returns HTTP `409`. The expected evidence is `main_log_text=verified`; it shows the robot client preserved the bridge error body and the AI chat plugin logged the failed reply send. It does not require or operate on the real WeChat window.
+
 Earlier local diagnostic note (2026-06-24): without DB preparation, the temporary `9002` main service started and reported `/api/v1/robot/is-running=true` and `/api/v1/robot/is-loggedin=false`, and the callback returned HTTP 200. No mock OpenClaw request and no mock `/api/Msg/SendTxt` were observed because `robot_admin.robot.id=27` currently has an empty `wechat_id`; `SyncMessageCallback` ignores callbacks whose `{wechat_id}` does not match `vars.RobotRuntime.WxID`.
 
 When using a fresh robot database, confirm that `messages` exists before callback acceptance. The table is required before message plugins can run; it is now included in startup auto-migration for the OpenClaw assistant route.

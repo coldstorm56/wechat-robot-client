@@ -299,7 +299,7 @@ def make_openclaw_handler(recorder: Recorder, reply: str) -> type[BaseHTTPReques
     return OpenClawHandler
 
 
-def make_wechat_handler(recorder: Recorder) -> type[BaseHTTPRequestHandler]:
+def make_wechat_handler(recorder: Recorder, send_error_code: str = "") -> type[BaseHTTPRequestHandler]:
     class WeChatHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             body = read_json_body(self)
@@ -307,6 +307,27 @@ def make_wechat_handler(recorder: Recorder) -> type[BaseHTTPRequestHandler]:
                 recorder.sent_messages.put(body)
                 print(json.dumps({"mock_wechat_send": body}, ensure_ascii=False), flush=True)
                 now = int(time.time())
+                if send_error_code == "blocking_window":
+                    write_json(
+                        self,
+                        409,
+                        {
+                            "Success": False,
+                            "Code": -5,
+                            "Message": "WeChat UI blocked: blocking_window",
+                            "Data": {
+                                "error_code": "blocking_window",
+                                "blocking_windows": [
+                                    {
+                                        "name": "Windows Security Alert",
+                                        "class_name": "#32770",
+                                        "rect": "566,230,1352,849",
+                                    }
+                                ],
+                            },
+                        },
+                    )
+                    return
                 write_json(
                     self,
                     200,
@@ -411,6 +432,24 @@ def wait_for_main(
     return False, last
 
 
+def wait_for_file_text(path: str, needle: str, timeout: float) -> tuple[bool, dict[str, Any]]:
+    deadline = time.time() + timeout
+    last: dict[str, Any] = {}
+    while time.time() < deadline:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+            last = {"path": path, "size": len(content), "tail": content[-2000:]}
+            if needle in content:
+                return True, last
+        except FileNotFoundError:
+            last = {"path": path, "error": "file not found"}
+        except OSError as exc:
+            last = {"path": path, "error": str(exc)}
+        time.sleep(0.5)
+    return False, last
+
+
 def stop_process_tree(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
@@ -446,7 +485,8 @@ def start_main_process(args: argparse.Namespace, openclaw_url: str, wechat_host:
     if args.go_env:
         env["GO_ENV"] = args.go_env
     log_path = args.main_log or os.path.join(tempfile.gettempdir(), "assistant-flow-e2e-main.log")
-    log_file = open(log_path, "ab", buffering=0)
+    args.main_log = log_path
+    log_file = open(log_path, "wb", buffering=0)
     print(json.dumps({"main_log": log_path, "main_command": args.start_main_command}, ensure_ascii=False), flush=True)
     return subprocess.Popen(
         args.start_main_command,
@@ -532,6 +572,7 @@ def run_smoke(args: argparse.Namespace, recorder: Recorder, main_url: str) -> in
         "sent_message": sent,
         "openclaw_request_count": len(recorder.openclaw_requests),
         "expected_reply": args.reply,
+        "mock_wechat_send_error": args.mock_wechat_send_error,
         "main_preflight": preflight,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -560,6 +601,12 @@ def main() -> int:
     parser.add_argument("--start-main-command", default="", help="optional command, e.g. 'go run .'")
     parser.add_argument("--main-start-timeout", type=float, default=90.0)
     parser.add_argument("--main-log", default="")
+    parser.add_argument(
+        "--expect-main-log-text",
+        default="",
+        help="after a successful send attempt, require the main-service log to contain this text",
+    )
+    parser.add_argument("--expect-main-log-timeout", type=float, default=10.0)
     parser.add_argument("--go-env", default="dev")
     parser.add_argument("--prepare-local-db", action="store_true")
     parser.add_argument(
@@ -575,6 +622,7 @@ def main() -> int:
     parser.add_argument("--robot-db", default="openclaw_assistant_dev")
     parser.add_argument("--robot-id", type=int, default=27)
     parser.add_argument("--wechat-port", type=int, default=3022)
+    parser.add_argument("--mock-wechat-send-error", choices=["", "blocking_window"], default="")
     parser.add_argument("--openclaw-port", type=int, default=18791)
     parser.add_argument("--wechat-id", default="wechat_ui_bot")
     parser.add_argument("--from-wxid", default="wxid_e2e_friend")
@@ -598,7 +646,10 @@ def main() -> int:
 
     recorder = Recorder()
     openclaw = ThreadingHTTPServer(("127.0.0.1", args.openclaw_port), make_openclaw_handler(recorder, args.reply))
-    wechat = ThreadingHTTPServer(("127.0.0.1", args.wechat_port), make_wechat_handler(recorder))
+    wechat = ThreadingHTTPServer(
+        ("127.0.0.1", args.wechat_port),
+        make_wechat_handler(recorder, args.mock_wechat_send_error),
+    )
     wechat.wechat_id = args.wechat_id  # type: ignore[attr-defined]
     serve(openclaw)
     serve(wechat)
@@ -637,6 +688,29 @@ def main() -> int:
             print(f"Waiting {args.inject_delay_seconds} seconds before injection.", file=sys.stderr)
             time.sleep(args.inject_delay_seconds)
         exit_code = run_smoke(args, recorder, args.main_url)
+        if exit_code == 0 and args.expect_main_log_text:
+            if not args.main_log:
+                print("--expect-main-log-text requires --main-log or --start-main-command.", file=sys.stderr)
+                return 1
+            found, log_state = wait_for_file_text(
+                args.main_log,
+                args.expect_main_log_text,
+                args.expect_main_log_timeout,
+            )
+            print(
+                json.dumps(
+                    {
+                        "main_log_text": "verified" if found else "missing",
+                        "needle": args.expect_main_log_text,
+                        "state": log_state,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                flush=True,
+            )
+            if not found:
+                return 1
         if exit_code == 0 and args.verify_session_log and db_patch is not None:
             db_patch.verify_session_log()
         return exit_code
