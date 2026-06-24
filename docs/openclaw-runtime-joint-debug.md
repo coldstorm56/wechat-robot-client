@@ -122,3 +122,503 @@ Padx: scan status interaction key missing
 ```
 
 The main service remained healthy (`is-running=true`) but not logged in (`is-loggedin=false`). Continue true private/group chat validation only after replacing `WECHAT_SERVER_HOST` with a currently working and trusted personal WeChat protocol endpoint, or after the `wechat-ipad` image is updated to a login-compatible version.
+
+## 7. New WeChat 4.x UI automation bridge option
+
+On 2026-06-23, WCFerry/go_wcf_http was evaluated as a local bridge option, but that path is not the current main line: the official v39.5.2 runtime depends on classic WeChat 3.9.12.51, and the local classic WeChat login was blocked by a WeChat "version too low" prompt.
+
+The next local-only route is:
+
+```text
+Windows WeChat 4.x at D:\software\Weixin
+  -> local UI Automation smoke/bridge
+  -> wechat-robot-client existing assistant flow
+  -> OpenClaw bridge
+```
+
+This route must keep the login state on this machine. Do not replace it with an untrusted public endpoint, and do not pull an unknown closed protocol image only because it advertises current login support.
+
+Local UI automation preflight:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py inspect
+```
+
+If WeChat is not already running, explicitly allow the script to start the local 4.x client:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py --launch inspect
+```
+
+Send one explicit smoke message to the currently open conversation. For the File Transfer Assistant smoke, open File Transfer Assistant in WeChat 4.x first. The command first requires local screenshot OCR to see the draft in the message editor before pressing Enter, then returns `ok=true` only after local screenshot OCR reads the submitted text from the visible WeChat chat area and confirms the current conversation's last readable message matches the submitted text. If the editor draft, visible delivery, or last-message check cannot be verified, treat the send as unproven.
+
+```powershell
+python .\scripts\wechat_ui_smoke.py send `
+  --message 'memo sync 0624 1435'
+```
+
+Best-effort send without visible verification is available only for local debugging and must not be used as acceptance evidence:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py send `
+  --message 'memo sync 0624 1435' `
+  --no-verify
+```
+
+Read the last visible text from the current conversation, or from a named conversation after opening it:
+
+```powershell
+python .\scripts\wechat_ui_smoke.py read-last
+python .\scripts\wechat_ui_smoke.py read-last --contact '文件传输助手'
+```
+
+OCR notes:
+
+- The OCR verification is local-only and uses the visible WeChat window; it does not upload screenshots.
+- Use a distinct but normal-looking message for real WeChat verification, such as a short memo with a timestamp. Prefer simple ASCII memo text for OCR stability, and avoid visible automation terms like `Codex`, `automation`, or `smoke` in messages sent to the real account.
+- `read-last` returns the last OCR-readable visible text in the chat area, not a protocol message object.
+- On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
+- If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
+- If a send attempt reports `ok=true`, verify `last_text_status=last_visible_verified` and inspect `last_text`; this is stricter than merely seeing the submitted text somewhere in the chat area.
+- Window size can be adjusted. A larger WeChat 4.x window is usually more stable for OCR and click targeting; fullscreen is acceptable and currently preferred for daily operation. Avoid making it so narrow that the chat list, message area, or editor are compressed or hidden. Resizing is safe as long as the current chat title, message area, and editor remain visible. Before enabling polling, choose a comfortable stable size. The bridge does not require a fixed pixel size, but it requires a minimum visible window size and fails closed when the resized window is too small.
+- For current-chat mode, set an expected visible chat title such as `文件传输助手`; the bridge will fail before touching the editor when WeChat is on a different surface such as Service Accounts, Contacts, or search results.
+- If `status` returns `blocking_windows`, a known system dialog or other blocking window is covering WeChat. Close or handle that dialog manually first; the bridge should not click through security prompts or report OCR/send success while the WeChat surface is blocked.
+
+Safety notes:
+
+- No background polling is enabled by the smoke script.
+- It only focuses WeChat during explicit `send` or `read-last` commands.
+- It restores the previous clipboard text and foreground window by default.
+- Failures are logged to `%TEMP%\wechat-ui-automation-bridge.log` unless `WECHAT_UI_LOG_PATH` overrides it.
+- The bridge supports operator takeover pauses. During a pause, send/read endpoints return `operator pause active` and do not touch the WeChat window. Use this for daily manual handoff windows or any temporary period where the operator wants full control of the desktop.
+- For daily-use safety, send actions should remain explicit until the bridge has a tested trigger, whitelist, and pause control.
+
+Start the local compatibility bridge:
+
+For a repeatable PowerShell entrypoint that avoids Chinese text encoding drift in Windows PowerShell 5, use:
+
+```powershell
+.\scripts\wechat_ui_bridge_run.ps1 -PauseWindows "12:00-13:30,19:00-22:00"
+```
+
+To preview the bridge configuration without starting the process:
+
+```powershell
+.\scripts\wechat_ui_bridge_run.ps1 -NoStart
+```
+
+The summary prints the matching main-service setting, for example `WECHAT_SERVER_HOST=127.0.0.1:3021`. Use `-MinWindowWidth`/`-MinWindowHeight` if you intentionally change the minimum visible WeChat window threshold, and use `-PauseWindows` for daily human takeover windows.
+
+Start the main service against the UI bridge and local OpenClaw bridge:
+
+```powershell
+.\scripts\wechat_ui_main_run.ps1
+```
+
+To preview the main-service runtime environment without starting it:
+
+```powershell
+.\scripts\wechat_ui_main_run.ps1 -NoStart
+```
+
+The main runner sets `WECHAT_SERVER_HOST=127.0.0.1:3021`, enables OpenClaw by default, points `OPENCLAW_BASE_URL` at the local `cmd/openclaw-bridge`, and keeps the bot name/prefix defaults encoding-safe for Windows PowerShell. It refuses non-loopback WeChat bridge addresses and, unless explicitly overridden, non-loopback OpenClaw URLs.
+
+Check the local UI bridge runtime stack without touching the WeChat UI:
+
+```powershell
+.\scripts\wechat_ui_stack_status.ps1
+```
+
+This checks the UI bridge health/pause/poll endpoints, main-service `is-running`/`is-loggedin`, and OpenClaw bridge health. Add `-IncludeRealUi` only when you want the script to run the read-only WeChat UI diagnostic; add `-IncludeReadiness` only when it is acceptable for the bridge to run its readiness preflight.
+
+```powershell
+$env:WECHAT_UI_BRIDGE_ADDR='127.0.0.1:3021'
+$env:WECHAT_UI_BOT_WXID='wechat_ui_bot'
+$env:WECHAT_UI_BOT_NAME='此刻正佳'
+$env:WECHAT_UI_CONTACT_ALIASES='filehelper=文件传输助手'
+$env:WECHAT_UI_SEND_CURRENT_CHAT='true'
+$env:WECHAT_UI_SEND_REQUIRE_VERIFY='true'
+$env:WECHAT_UI_EXPECT_CHAT_TITLE='文件传输助手'
+$env:WECHAT_UI_MIN_WINDOW_WIDTH='640'
+$env:WECHAT_UI_MIN_WINDOW_HEIGHT='480'
+$env:WECHAT_UI_OPERATOR_PAUSE_WINDOWS='12:00-13:30,19:00-22:00'
+$env:WECHAT_UI_OPERATOR_PAUSE_FILE="$env:TEMP\wechat-ui-operator-pause.json"
+$env:WECHAT_UI_ASSISTANT_SYNC_URL='http://127.0.0.1:9001/api/v1/wechat-client/wechat_ui_bot/sync-message'
+$env:WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS='120'
+$env:WECHAT_UI_OUTGOING_ECHO_TTL_SECONDS='300'
+$env:WECHAT_UI_POLL_MAX_ERRORS='3'
+go run ./cmd/wechat-ui-bridge
+```
+
+Daily pause windows use local `HH:MM-HH:MM` time and can cross midnight, for example `22:00-01:00`. These windows are the default "operator takes over" schedule: during that time the bridge may keep running, but polling skips work and send/read operations fail closed without focusing WeChat. UI-touching endpoints return HTTP `423` with `operator pause active`.
+
+For an immediate temporary human takeover without restarting the bridge, use the helper script:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -Action set -Minutes 30 -Reason "operator takeover"
+```
+
+To pause until an exact local/RFC3339 time:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -Action set -Until "2026-06-24T18:30:00+08:00" -Reason "operator takeover"
+```
+
+To set a local daily pause window through the dynamic pause file:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -LocalFile -Action set -Windows "12:00-13:30,19:00-22:00" -Reason "daily operator takeover"
+```
+
+To check or clear the current dynamic pause:
+
+```powershell
+.\scripts\wechat_ui_operator_pause.ps1 -Action status
+.\scripts\wechat_ui_operator_pause.ps1 -Action clear
+```
+
+If the bridge is not running yet, add `-LocalFile` to write or clear the pause file directly. The bridge will honor that file when it starts as long as `WECHAT_UI_OPERATOR_PAUSE_FILE` points to the same path.
+
+The same operations are also available through the local loopback API:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PauseSet `
+  -ContentType 'application/json' `
+  -Body '{"minutes":30,"reason":"operator takeover"}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PauseSet `
+  -ContentType 'application/json' `
+  -Body '{"pause_until":"2026-06-24T18:30:00+08:00","reason":"operator takeover"}'
+```
+
+To resume immediately:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseClear
+```
+
+The same dynamic pause can also be controlled by the local pause file:
+
+```powershell
+$pauseFile = "$env:TEMP\wechat-ui-operator-pause.json"
+@{
+  pause_until = '2026-06-24T18:30:00+08:00'
+  reason = 'operator takeover'
+} | ConvertTo-Json | Set-Content -Encoding UTF8 $pauseFile
+```
+
+To resume immediately:
+
+```powershell
+Remove-Item "$env:TEMP\wechat-ui-operator-pause.json" -ErrorAction SilentlyContinue
+```
+
+The bridge exposes a minimal old-protocol-compatible subset:
+
+```text
+GET  /health
+POST /api/Login/GetCacheInfo
+POST /api/User/GetContractProfile
+POST /api/Friend/GetContractDetail
+POST /api/Msg/SendTxt
+POST /api/Msg/CurrentLastText
+POST /api/Operator/PauseStatus
+POST /api/Operator/PauseSet
+POST /api/Operator/PauseClear
+POST /api/Operator/UiStatus
+POST /api/Operator/Readiness
+POST /api/Operator/InjectCurrentLastText
+POST /api/Operator/PollCurrentLastText
+POST /api/Operator/PollStart
+POST /api/Operator/PollStop
+POST /api/Operator/PollStatus
+```
+
+`UiStatus` keeps the raw visible-window fields from the Python smoke script and adds bridge-level readiness fields:
+
+- `blocked=true` means a known blocking window is covering WeChat, such as a Windows security/firewall prompt.
+- `window_size_ok=false` means the WeChat window is smaller than `WECHAT_UI_MIN_WINDOW_WIDTH`/`WECHAT_UI_MIN_WINDOW_HEIGHT`. Resize it or lower those thresholds only for controlled debugging.
+- `usable=false` means the bridge should not send/read yet. `unusable_reason` can be `blocking_window`, `window_too_small`, `unexpected_chat_title`, or `not_foreground`.
+- `blocking_windows` is preserved so the operator can see which local window needs manual handling.
+
+Use `UiStatus` as the explicit operator/runtime preflight before enabling a poll loop or a real send smoke.
+
+`Readiness` is the combined runtime preflight endpoint. It returns the current operator pause state, poll loop status, and, when not paused, the normalized `UiStatus`. If an operator pause is active, it returns `ready=false` with `reason=operator_pause` without touching the WeChat window.
+
+When send/read automation is attempted while a known blocking window covers WeChat, the smoke script returns `error_code=blocking_window`; the bridge maps that to HTTP `409` and preserves `blocking_windows` in the response data.
+
+Main-service assistant replies now log send failures from the AI chat plugin. If OpenClaw returns a reply but the WeChat UI bridge refuses delivery, look for `[AIChat] 发送 AI 回复失败` in the main-service log together with the bridge error text. The text-send client treats non-2xx bridge responses as errors and preserves the response body, so `blocking_window` details should be visible in that log line.
+
+Dry-run the bridge without touching the WeChat UI:
+
+```powershell
+$env:WECHAT_UI_DRY_RUN='true'
+go run ./cmd/wechat-ui-bridge
+```
+
+If an operator intentionally wants best-effort UI submission without visible delivery verification, set `WECHAT_UI_SEND_REQUIRE_VERIFY=false`; do not use that mode for acceptance.
+
+Bridge smoke checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3021/health
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Login/GetCacheInfo
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseStatus
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PauseSet `
+  -ContentType 'application/json' `
+  -Body '{"minutes":5,"reason":"smoke handoff"}'
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PauseClear
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/UiStatus
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/Readiness
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Msg/CurrentLastText `
+  -ContentType 'application/json' `
+  -Body '{}'
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Msg/SendTxt `
+  -ContentType 'application/json' `
+  -Body '{"Wxid":"wechat_ui_bot","ToWxid":"filehelper","Content":"wechat-ui bridge smoke"}'
+```
+
+Manual assistant-flow injection smoke:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/InjectCurrentLastText `
+  -ContentType 'application/json' `
+  -Body '{"from_wxid":"filehelper","content":"manual visible text smoke"}'
+```
+
+When `content` is omitted, `InjectCurrentLastText` first runs the local `read-last` OCR check against the current visible WeChat conversation and then posts the resulting text to `WECHAT_UI_ASSISTANT_SYNC_URL` or the request `callback_url`. The callback URL is restricted to loopback hosts (`127.0.0.1`, `localhost`, or `::1`). This is a manual bridge into the existing `/api/v1/wechat-client/:wechatID/sync-message` assistant flow; it is not continuous polling.
+
+Manual injection has a local in-memory duplicate guard. By default, the same `wechat_id`/`from_wxid`/`to_wxid`/`content` is suppressed for 120 seconds and returns HTTP 409 instead of forwarding the same visible text twice. Use `WECHAT_UI_INJECT_DEDUPE_TTL_SECONDS=0` to disable this guard for debugging, or pass an explicit `dedupe_key`/`skip_dedupe` in the request when a controlled test requires it.
+
+The bridge also keeps a short in-memory record of text it has just sent through `SendTxt`. By default, if polling sees the same text in the same conversation within 300 seconds, it reports `skipped=true` with `reason=outgoing echo` and does not inject it into the assistant flow. Set `WECHAT_UI_OUTGOING_ECHO_TTL_SECONDS=0` only for controlled debugging.
+
+For group-style injection, pass a chatroom `from_wxid`, a `sender_wxid`, and optionally `at_bot=true` or `at_wxid`:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/InjectCurrentLastText `
+  -ContentType 'application/json' `
+  -Body '{"from_wxid":"room@chatroom","sender_wxid":"wxid_user","content":"助手：群聊 smoke","at_bot":true}'
+```
+
+The bridge formats this as the existing callback expects: `Content` becomes `sender_wxid:\ntext`, and `at_bot=true` writes the bot wxid into `MsgSource`/`atuserlist` so the main service can set `IsAtMe`. This is only the payload bridge foundation; reliable sender extraction from the WeChat 4.x UI still needs a later UI parsing stage.
+
+Single-step poll smoke:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PollCurrentLastText `
+  -ContentType 'application/json' `
+  -Body '{}'
+```
+
+`PollCurrentLastText` reads the current visible last text once, compares it with the bridge's in-memory checkpoint for the `wechat_id`/`from_wxid`/`to_wxid` stream, and only injects when the text changed. Pass `{"inject":false}` to observe and update the checkpoint without calling the main service. This endpoint is intended as the safe stepping stone toward low-frequency polling; it does not run a background loop by itself.
+
+Explicit low-frequency polling loop:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:3021/api/Operator/PollStart `
+  -ContentType 'application/json' `
+  -Body '{"interval_seconds":60,"require_ui_usable":true}'
+
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PollStatus
+Invoke-RestMethod -Method Post http://127.0.0.1:3021/api/Operator/PollStop
+```
+
+The poll loop is never started by default. `PollStart` runs one check immediately and then repeats at a low frequency; intervals below 30 seconds are clamped to 30 seconds. During operator takeover pause windows or a dynamic pause file, the loop records a skipped state and does not read or focus the WeChat window.
+
+Pass `{"require_ui_usable":true}` when starting a real poll loop. The bridge runs `UiStatus` first and refuses to start with HTTP `409` if WeChat is covered by a blocking dialog, on the wrong chat title, or otherwise marked `usable=false`. This is recommended for daily operation; omit it only for controlled debugging.
+
+By default, the loop stops itself after 3 consecutive poll errors (`WECHAT_UI_POLL_MAX_ERRORS=3`). This prevents repeated focus/OCR attempts when the WeChat window is too small, hidden, on the wrong page, or otherwise unreadable. Pass `{"max_errors":0}` only for controlled debugging when the operator is watching the desktop.
+
+By default, `PollStart` uses `prime_on_start=true`: the first immediate check records the current visible last text as the baseline with `inject=false`, so the bridge does not reply to an old message that was already on screen before polling started. Pass `{"prime_on_start":false}` only for a controlled smoke test where the current visible text should be injected immediately.
+
+If the poll loop is allowed to inject (`inject` omitted or `true`), `PollStart` validates `WECHAT_UI_ASSISTANT_SYNC_URL` or request `callback_url` before starting and rejects non-loopback or empty callbacks. For observe-only loops, pass `{"inject":false}`; no callback is required.
+
+WeChat UI acceptance runner:
+
+```powershell
+.\scripts\wechat_ui_acceptance.ps1
+```
+
+The default runner parses all WeChat UI PowerShell helpers, verifies launcher/status helpers keep their safe defaults, compiles the Python smoke/harness scripts, runs `go test ./cmd/wechat-ui-bridge -count=1`, runs the assistant-flow harness self-test, and reads the real WeChat UI status without sending a message. Use this after small bridge changes or before attempting a real send. If the status output contains `blocking_windows`, handle that local dialog manually before real WeChat acceptance.
+
+For a shorter read-only local diagnosis of why real WeChat send/read is not ready, run:
+
+```powershell
+.\scripts\wechat_ui_diagnose.ps1
+```
+
+It reports `ready_for_real_send`, window size, title-match state, foreground state, and any `blocking_windows`. It does not send messages or click security prompts. When `ready_for_real_send=false`, follow `next_action` and rerun the diagnostic before attempting a real send smoke.
+
+For the gated real WeChat File Transfer Assistant smoke, run this only after WeChat is on the expected conversation and the diagnostic is ready:
+
+```powershell
+.\scripts\wechat_ui_real_smoke.ps1
+```
+
+This script first runs the read-only diagnostic. If `ready_for_real_send=false`, it exits without sending. If ready, it sends one timestamped normal memo message, requires visible delivery verification, then reads the current conversation's last visible text and requires it to match the sent message. The Python send helper retries click/paste once when the editor draft is not visible, but still presses Enter only after draft OCR succeeds. Use `-Message` for a custom verification string, `-VerifyTimeoutSeconds`/`-EditorVerifyTimeoutSeconds` for slower OCR cycles, `-MinWindowWidth`/`-MinWindowHeight` for a controlled resized-window threshold, and reserve `-SkipReadiness` for watched local debugging only.
+
+For the full local main-service path without touching real WeChat, run:
+
+```powershell
+.\scripts\wechat_ui_acceptance.ps1 -RunMainE2E -SkipRealUiStatus
+```
+
+This starts temporary main-service instances on `9002` and verifies private chat, send-failure logging, group `@bot`, group `助手：` prefix, and non-whitelisted group suppression through local mock OpenClaw and mock WeChat endpoints. It uses reversible local DB patches and should end with zero remaining test session logs, group members, chatroom settings, or messages for the acceptance inputs.
+
+Assistant-flow local E2E harness:
+
+```powershell
+python scripts/assistant_flow_e2e.py --self-test
+```
+
+`--self-test` only verifies the harness and its local mock servers. To check the real main service path without touching WeChat, run the harness with local mock OpenClaw and mock WeChat bridge ports, then start the main service inside the delay window:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --inject-delay-seconds 45 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid wxid_e2e_friend `
+  --content "assistant flow e2e smoke" `
+  --reply "OpenClaw mock reply"
+```
+
+In another PowerShell window during the delay:
+
+```powershell
+$env:WECHAT_SERVER_HOST='127.0.0.1:3022'
+$env:OPENCLAW_ENABLED='true'
+$env:OPENCLAW_BASE_URL='http://127.0.0.1:18791/api/assistant/chat'
+$env:BOT_NAME='助手'
+$env:TRIGGER_MODE='at_or_prefix'
+$env:TRIGGER_PREFIX='助手：'
+go run .
+```
+
+The harness posts one `sync-message` callback to `http://127.0.0.1:9001/api/v1/wechat-client/{wechat_id}/sync-message` and waits for the main service to call the mock `/api/Msg/SendTxt`. `--wechat-id` must match the running `vars.RobotRuntime.WxID`; private chat AI or the relevant group whitelist must already be enabled in the local database. If no `/api/Msg/SendTxt` call is observed, check `WECHAT_SERVER_HOST`, `OPENCLAW_BASE_URL`, the active bot wxid, and the AI enablement settings before moving to real WeChat UI acceptance.
+
+The harness can also start an isolated temporary main service on a different port, leaving an existing `9001` process untouched:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --prepare-local-db `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid wxid_e2e_friend `
+  --content "assistant flow real-main smoke" `
+  --reply "OpenClaw mock reply real-main"
+```
+
+When `--prepare-local-db` is active, the harness verifies `assistant_session_logs` by default before cleanup. A passing run prints `assistant_session_log=verified` with a `success` row whose `reply_text` contains the expected mock OpenClaw reply. Pass `--no-verify-session-log` only for focused diagnostics when the local database is intentionally unavailable.
+
+To verify the failure-observability path without touching real WeChat, make the mock WeChat bridge refuse `/api/Msg/SendTxt` with the same `blocking_window` shape used by the UI bridge, and require the temporary main-service log to contain that text:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --prepare-local-db `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid wxid_e2e_friend `
+  --content "assistant flow send error smoke" `
+  --reply "OpenClaw mock reply send error smoke" `
+  --mock-wechat-send-error blocking_window `
+  --expect-main-log-text "blocking_window"
+```
+
+This run still proves the main-service `sync-message -> OpenClaw -> SendTxt` path reached a send attempt, but the mock bridge returns HTTP `409`. The expected evidence is `main_log_text=verified`; it shows the robot client preserved the bridge error body and the AI chat plugin logged the failed reply send. It does not require or operate on the real WeChat window.
+
+Earlier local diagnostic note (2026-06-24): without DB preparation, the temporary `9002` main service started and reported `/api/v1/robot/is-running=true` and `/api/v1/robot/is-loggedin=false`, and the callback returned HTTP 200. No mock OpenClaw request and no mock `/api/Msg/SendTxt` were observed because `robot_admin.robot.id=27` currently has an empty `wechat_id`; `SyncMessageCallback` ignores callbacks whose `{wechat_id}` does not match `vars.RobotRuntime.WxID`.
+
+When using a fresh robot database, confirm that `messages` exists before callback acceptance. The table is required before message plugins can run; it is now included in startup auto-migration for the OpenClaw assistant route.
+
+Use a normal-looking test sender such as `wxid_e2e_friend` for private-chat E2E. `filehelper` is useful for real WeChat UI smoke tests, but the main-service contact classification can treat special built-in accounts as non-friend contacts and skip private AI chat.
+
+For group E2E without touching real WeChat, use a chatroom `from_wxid` and a member `sender_wxid`. When `--prepare-local-db` is active, the harness temporarily enables the chatroom AI whitelist and pre-creates the test group member so the chatroom plugin can pass its pre-action check:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --prepare-local-db `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid room_e2e@chatroom `
+  --to-wxid wechat_ui_bot `
+  --sender-wxid wxid_group_user `
+  --at-wxid wechat_ui_bot `
+  --content "group at assistant flow smoke" `
+  --reply "OpenClaw mock reply group at smoke"
+```
+
+For the `助手：` prefix path, omit `--at-wxid` and include the prefix in `--content`:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --prepare-local-db `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid room_e2e@chatroom `
+  --to-wxid wechat_ui_bot `
+  --sender-wxid wxid_group_user `
+  --content "助手：group prefix assistant flow smoke" `
+  --reply "OpenClaw mock reply group prefix smoke"
+```
+
+The harness verifies `assistant_session_logs.status=success` for both group modes. Prefix-triggered messages are logged after the prefix is removed, so the expected `request_text` for the example above is `group prefix assistant flow smoke`. The DB cleanup removes the temporary chatroom whitelist, group member, contacts, messages, and session logs after the run.
+
+To verify that a non-whitelisted group does not trigger an AI reply, keep the test group member but disable the temporary chatroom AI whitelist and require no send:
+
+```powershell
+python scripts/assistant_flow_e2e.py `
+  --prepare-local-db `
+  --no-enable-chat-room-ai `
+  --expect-no-send `
+  --start-main-command "C:\Users\28029\.cache\codex-go\go1.26.4-tar\go\bin\go.exe run ." `
+  --main-port 9002 `
+  --wechat-port 3022 `
+  --openclaw-port 18791 `
+  --wechat-id wechat_ui_bot `
+  --from-wxid room_e2e@chatroom `
+  --to-wxid wechat_ui_bot `
+  --sender-wxid wxid_group_user `
+  --at-wxid wechat_ui_bot `
+  --content "group non whitelist assistant flow smoke" `
+  --reply "OpenClaw mock reply should not send" `
+  --wait-reply-seconds 6
+```
+
+The expected evidence is `ok=true`, `openclaw_request_count=0`, and `sent_message=null`.
+
+Validated local main-service E2E (2026-06-24): with `--prepare-local-db`, the harness temporarily set `robot_admin.robot.id=27` to `wechat_ui_bot`, enabled global private-chat AI, started a temporary `9002` main service, injected `wxid_e2e_friend`, observed one mock OpenClaw request, captured mock `/api/Msg/SendTxt` with `Content="OpenClaw mock reply cleanup smoke"`, and verified an `assistant_session_logs.status=success` row before cleanup. The DB patch restored the original robot/global-settings values and removed test messages/contacts/session logs after the run.
+
+Validated local group E2E (2026-06-24): with `--prepare-local-db`, the harness temporarily enabled `room_e2e@chatroom`, pre-created `wxid_group_user`, and verified both `@bot` and `助手：` prefix callbacks through mock OpenClaw to mock `/api/Msg/SendTxt`. It also verified the non-whitelisted path with `--no-enable-chat-room-ai --expect-no-send`, observing no OpenClaw request and no mock send. The observed group send targets for positive runs were `ToWxid="room_e2e@chatroom"` and `At="wxid_group_user"`, and both positive runs verified `assistant_session_logs.status=success` before cleanup. A final DB check found zero remaining rows for the test session logs, group member, and chatroom settings.
+
+Point the main service at this bridge only after the explicit send/read smoke checks pass:
+
+```powershell
+$env:WECHAT_SERVER_HOST='127.0.0.1:3021'
+```
+
+Current bridge boundary: this first bridge wraps explicit text submission to the currently open conversation, OCR-based visible last-text reads, manual current-last-text injection into the existing assistant sync callback, group-shaped callback payload construction, single-step changed-text polling, an explicit low-frequency poll loop, and recent outgoing echo suppression. With `WECHAT_UI_SEND_CURRENT_CHAT=true`, both bridge send and bridge read avoid automatic contact search even if a `filehelper`/`to_wxid` field is provided. A keyboard submission is not accepted as real delivery unless the same text becomes visible in the WeChat UI. On the current Windows WeChat 4.x client, contact-search navigation can fall into WeChat "搜一搜" and is not enabled as the default bridge path, and message-editor focus can fail from a background bridge process. Reliable group sender extraction from UI text, group `@` detection from UI text, prefix detection from UI text, and whitelist-driven automatic replies still need a later stage after real UI smoke validation.

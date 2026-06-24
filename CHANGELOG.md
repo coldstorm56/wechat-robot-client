@@ -2,6 +2,62 @@
 
 ## [Unreleased] - 2026/06/22
 
+- Runtime check: add a local WeChat 4.x UI automation smoke script for window detection, explicit text send, and last visible text reads without public protocol endpoints.
+- Runtime docs: document the WCFerry/classic-WeChat blocker and the new local-only WeChat 4.x UI automation route with clipboard/window restoration safety notes.
+- Protocol bridge: add a loopback-only WeChat UI compatibility bridge with health, profile/contact stubs, explicit text sending, and visible last-text reads.
+- Runtime check: require visible UI delivery verification before reporting a WeChat UI send as successful; best-effort keyboard submission is now explicit and not accepted as delivery evidence.
+- Runtime check: switch WeChat UI send/read smoke evidence to local chat-area OCR; verified `Codex visible OCR smoke 2026-06-23` in File Transfer Assistant and read it back as the last visible text.
+- Protocol bridge: keep current-chat read mode aligned with current-chat send mode so bridge smoke checks do not enter WeChat 4.x contact search by default.
+- Runtime safety: document WeChat 4.x MMUI input-focus risk; bridge send attempts fail closed when visible OCR delivery cannot prove the message was sent.
+- Runtime safety: add operator takeover pause windows and a local dynamic pause file so the WeChat UI bridge can avoid send/read automation during human handoff periods.
+- Runtime tooling: add a PowerShell helper for setting, checking, and clearing WeChat UI operator takeover pauses through the bridge API or local pause file.
+- Runtime safety: verify the message editor draft before pressing Enter, so WeChat UI send attempts fail closed before submission when the MMUI editor cannot be focused.
+- Runtime safety: add an expected chat-title guard so current-chat send/read automation refuses to run on the wrong WeChat surface.
+- Protocol bridge: expose a read-only WeChat UI status endpoint with OCR title and title-match state for operator/runtime readiness checks.
+- Runtime safety: add local operator pause set/clear endpoints so a human takeover window can be applied without restarting the WeChat UI bridge.
+- Protocol bridge: add a manual current-last-text injection endpoint that forwards visible WeChat text into the existing main-service `sync-message` assistant flow through a loopback-only callback.
+- Runtime safety: add an in-memory duplicate guard for manual WeChat UI text injection so the same visible message is not forwarded repeatedly by accident.
+- Protocol bridge: add a single-step current-last-text poll endpoint that injects only when the visible text changed, preparing for safer low-frequency polling.
+- Protocol bridge: add explicit start/stop/status controls for a low-frequency WeChat UI poll loop with pause-aware skipping and a minimum poll interval.
+- Runtime safety: suppress recently sent WeChat UI text during polling so assistant replies are not re-injected as incoming messages.
+- Runtime safety: make the WeChat UI poll loop prime the current visible text on startup by default, avoiding immediate replies to stale on-screen messages.
+- Protocol bridge: support group-shaped WeChat UI callback payloads with `sender_wxid` and `at_bot` metadata so existing group trigger logic can be exercised through the UI bridge.
+- Runtime safety: validate injecting poll-loop callback configuration before startup, while still allowing observe-only polling without a callback.
+- Runtime safety: stop the WeChat UI poll loop after consecutive read/inject errors by default, reducing repeated focus/OCR attempts during window-size or operator handoff conflicts.
+- Runtime safety: detect known blocking system dialogs over the WeChat window and fail closed before OCR/send; document resizable WeChat window guidance and operator takeover windows.
+- Runtime safety: add a configurable minimum WeChat window size preflight so resized windows that are too small are reported as `window_too_small` before send/read automation.
+- Protocol bridge: normalize `/api/Operator/UiStatus` with `blocked`, `usable`, and `unusable_reason` fields so callers can avoid UI automation while WeChat is covered or on the wrong chat.
+- Runtime safety: lock the operator-pause contract in tests so send/read/status/inject/poll endpoints return HTTP 423 without invoking UI automation during manual takeover.
+- Runtime validation: cover `/api/Operator/UiStatus` at the handler level with a fake local smoke script, proving blocked-window script output becomes `blocked=true` and `usable=false` in the bridge API.
+- Runtime safety: add optional `require_ui_usable` preflight to `PollStart`, rejecting background polling before it starts when `UiStatus` reports an unusable WeChat surface.
+- Protocol bridge: add `/api/Operator/Readiness` as a combined pause/UI/poll preflight endpoint; it avoids touching WeChat while an operator pause is active.
+- Runtime safety: return structured `blocking_window` errors from WeChat UI send/read script failures and map them to HTTP 409 in the bridge.
+- Runtime validation: make the assistant-flow E2E harness verify `assistant_session_logs.status=success` and expected `reply_text` before local DB cleanup.
+- Runtime validation: extend the assistant-flow E2E harness to prepare reversible chatroom whitelist/member data and verify group `@bot` plus `助手：` prefix triggers through mock OpenClaw and mock WeChat send.
+- Runtime validation: add an assistant-flow negative E2E mode for non-whitelisted groups, proving no OpenClaw request and no WeChat send are produced when chatroom AI is disabled.
+- Runtime safety: log AI reply send failures from the assistant plugin so WeChat UI bridge errors such as `blocking_window` are visible in the main service logs.
+- Runtime fix: make the robot text-send client return non-2xx WeChat bridge response bodies as errors, preserving `blocking_window` details for main-service logs.
+- Runtime validation: let the assistant-flow E2E harness simulate WeChat UI bridge send failures and assert that the main-service log contains the expected bridge error text.
+- Runtime validation: add a local assistant-flow E2E harness with mock OpenClaw and mock WeChat bridge endpoints to verify the 9001 `sync-message` to `/Msg/SendTxt` path before real WeChat UI acceptance.
+- Runtime validation: let the assistant-flow E2E harness start an isolated temporary main service and report callback/preflight diagnostics when active robot wxid or AI enablement prerequisites are not satisfied.
+- Runtime validation: add a PowerShell WeChat UI acceptance runner that aggregates bridge tests, harness self-test, read-only real UI status, and optional full mock main-service E2E coverage.
+- Runtime tooling: add a read-only WeChat UI diagnostic helper that summarizes window size, title match, foreground state, blocking windows, and the next manual action before real send/read smoke.
+- Runtime tooling: add a reusable PowerShell WeChat UI bridge launcher that sets encoding-safe defaults, window thresholds, assistant callback URL, and operator takeover windows.
+- Runtime validation: add a gated real WeChat smoke helper that refuses to send unless read-only readiness passes, then verifies visible send and last-text readback.
+- Runtime tooling: add a PowerShell main-service launcher that points the assistant runtime at the local WeChat UI bridge and loopback OpenClaw bridge with encoding-safe bot trigger defaults.
+- Runtime tooling: add a read-only local stack status helper for checking UI bridge, main service, and OpenClaw bridge endpoints before real WeChat smoke.
+- Runtime validation: expand the WeChat UI acceptance runner to parse helper scripts and verify bridge/main/status helper safe defaults.
+- Runtime check: expand WeChat UI title OCR for fullscreen windows and document fullscreen as an acceptable daily operation mode.
+- Runtime safety: switch WeChat UI paste/submit keystrokes to Win32 keyboard events and report WeChat 4.x login prompts as `requires_login` instead of attempting chat automation.
+- Protocol bridge: normalize WeChat UI login prompts as `requires_login` in operator readiness so polling and real send preflights fail closed until the assistant account is manually logged in.
+- Runtime safety: change real WeChat visible-verification message defaults and docs to normal ASCII memo-style text instead of obvious automation test wording.
+- Runtime fix: widen WeChat UI OCR chat/editor regions for fullscreen windows so left-aligned drafts and incoming bubbles are not cropped during verification.
+- Runtime validation: lengthen gated real WeChat visible-delivery OCR waits while keeping last-visible-message matching as the final send proof.
+- Runtime safety: retry WeChat UI click/paste once when editor draft OCR fails, while still refusing to press Enter until the expected draft is visible.
+- Runtime validation: increase full assistant-flow E2E main-service startup waits to tolerate slow local MySQL auto-migration during acceptance.
+- Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.
+- Runtime validation: pass the local temporary-main-service assistant-flow E2E check from `sync-message` through mock OpenClaw to mock `/Msg/SendTxt` with reversible local DB preparation.
+- Runtime safety: tighten WeChat UI send verification so a successful send must also match the current conversation's last readable message.
 - Runtime debug: add local OpenClaw HTTP bridge, Docker Compose override, and local end-to-end validation notes.
 - Runtime fix: make the OpenClaw bridge tolerate plain-text CLI replies and migrate local admin/MCP tables required by startup.
 - Runtime fix: expose the local `wechat-ipad` protocol service on `127.0.0.1:3010` for real personal WeChat login, keeping `127.0.0.1:8090` for the WeChat auth/admin service.

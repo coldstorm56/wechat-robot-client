@@ -151,15 +151,20 @@ func (p *AIChatPlugin) PostAction(ctx *plugin.MessageContext) {
 
 }
 
-func (p *AIChatPlugin) SendMessage(ctx *plugin.MessageContext, aiReplyText string) {
+func (p *AIChatPlugin) SendMessage(ctx *plugin.MessageContext, aiReplyText string) error {
 	if aiReplyText == "" {
-		return
+		return nil
 	}
+	var err error
 	if ctx.Message.IsChatRoom {
-		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText, ctx.Message.SenderWxID)
+		err = ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText, ctx.Message.SenderWxID)
 	} else {
-		ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText)
+		err = ctx.MessageService.SendTextMessage(ctx.Message.FromWxID, aiReplyText)
 	}
+	if err != nil {
+		log.Printf("[AIChat] 发送 AI 回复失败: from_wxid=%s sender_wxid=%s is_chat_room=%v err=%v", ctx.Message.FromWxID, ctx.Message.SenderWxID, ctx.Message.IsChatRoom, err)
+	}
+	return err
 }
 
 func (p *AIChatPlugin) setChatMessageTextContent(message *openai.ChatCompletionMessageParamUnion, text string) {
