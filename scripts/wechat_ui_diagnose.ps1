@@ -57,18 +57,26 @@ $blockingCount = 0
 if ($status.blocking_windows) {
     $blockingCount = @($status.blocking_windows).Count
 }
+$windowClass = ''
+if ($status.window -and $status.window.class_name) {
+    $windowClass = [string]$status.window.class_name
+}
+$requiresLogin = $windowClass.ToLowerInvariant().Contains('login')
 
 $reasons = New-Object System.Collections.Generic.List[string]
-if (-not $status.window_size_ok) {
+if ($requiresLogin) {
+    $reasons.Add('requires_login')
+}
+if (-not $requiresLogin -and -not $status.window_size_ok) {
     $reasons.Add('window_too_small')
 }
 if ($blockingCount -gt 0) {
     $reasons.Add('blocking_window')
 }
-if ($false -eq $status.title_match) {
+if (-not $requiresLogin -and $false -eq $status.title_match) {
     $reasons.Add('unexpected_chat_title_or_unreadable_title')
 }
-if ($false -eq $status.foreground) {
+if (-not $requiresLogin -and $false -eq $status.foreground) {
     $reasons.Add('not_foreground')
 }
 if ($reasons.Count -eq 0) {
@@ -76,7 +84,9 @@ if ($reasons.Count -eq 0) {
 }
 
 $nextAction = 'Ready for a controlled real WeChat send/read smoke.'
-if ($blockingCount -gt 0) {
+if ($requiresLogin) {
+    $nextAction = 'WeChat is showing a login/security prompt. Manually log in as the assistant account, open File Transfer Assistant, then rerun this diagnostic.'
+} elseif ($blockingCount -gt 0) {
     $nextAction = 'Manually close or allow the blocking local dialog, then rerun this diagnostic. The script will not click security prompts.'
 } elseif (-not $status.window_size_ok) {
     $nextAction = 'Resize the WeChat main chat window larger, then rerun this diagnostic.'

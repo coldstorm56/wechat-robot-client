@@ -191,11 +191,17 @@ def window_priority(ctrl: auto.Control) -> tuple[int, int]:
     class_name = ctrl.ClassName or ""
     rect = ctrl.BoundingRectangle
     area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+    if is_login_window_class(class_name):
+        return (3, -area)
     if class_name == "Chrome_WidgetWin_0" and area > 0:
         return (0, -area)
     if area > 0:
         return (1, -area)
     return (2, 0)
+
+
+def is_login_window_class(class_name: str) -> bool:
+    return "login" in (class_name or "").lower()
 
 
 def describe_window(ctrl: auto.Control) -> WindowInfo:
@@ -212,6 +218,36 @@ def describe_window(ctrl: auto.Control) -> WindowInfo:
         process_id=process_id,
         rect=f"{rect.left},{rect.top},{rect.right},{rect.bottom}",
     )
+
+
+def describe_hwnd(hwnd: int) -> WindowInfo:
+    if not hwnd:
+        return WindowInfo(hwnd=0, name="", class_name="", process_id=0, rect="")
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    _, process_id = win32process.GetWindowThreadProcessId(hwnd)
+    return WindowInfo(
+        hwnd=int(hwnd),
+        name=(win32gui.GetWindowText(hwnd) or "").strip(),
+        class_name=(win32gui.GetClassName(hwnd) or "").strip(),
+        process_id=int(process_id or 0),
+        rect=f"{left},{top},{right},{bottom}",
+    )
+
+
+def foreground_window_info() -> WindowInfo:
+    return describe_hwnd(win32gui.GetForegroundWindow())
+
+
+def foreground_belongs_to_window(ctrl: auto.Control) -> bool:
+    hwnd = int(ctrl.NativeWindowHandle or 0)
+    foreground = win32gui.GetForegroundWindow()
+    if not hwnd or not foreground:
+        return False
+    if foreground == hwnd:
+        return True
+    _, target_pid = win32process.GetWindowThreadProcessId(hwnd)
+    _, foreground_pid = win32process.GetWindowThreadProcessId(foreground)
+    return bool(target_pid and foreground_pid and target_pid == foreground_pid)
 
 
 def find_wechat_window(timeout: float, launch: bool, exe_path: str) -> auto.Control:
@@ -296,7 +332,7 @@ def window_dimensions(ctrl: auto.Control) -> tuple[int, int]:
 def ensure_usable_chat_window(ctrl: auto.Control, min_width: int, min_height: int) -> None:
     width, height = window_dimensions(ctrl)
     class_name = (ctrl.ClassName or "").lower()
-    if "login" in class_name:
+    if is_login_window_class(class_name):
         raise RuntimeError(
             "WeChat was found, but it is not a usable chat window. "
             "Log in to WeChat 4.x and open the main chat window first."
@@ -402,19 +438,35 @@ def click_message_input(ctrl: auto.Control) -> None:
     time.sleep(0.2)
 
 
+def press_key(vk: int, hold: float = 0.03) -> None:
+    win32api.keybd_event(vk, 0, 0, 0)
+    time.sleep(hold)
+    win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+def press_hotkey(*keys: int, hold: float = 0.03) -> None:
+    for key in keys:
+        win32api.keybd_event(key, 0, 0, 0)
+        time.sleep(0.01)
+    time.sleep(hold)
+    for key in reversed(keys):
+        win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.01)
+
+
 def paste_text(text: str) -> None:
     set_clipboard_text(text)
-    auto.SendKeys("{Ctrl}v", waitTime=0.05)
-    time.sleep(0.2)
+    press_hotkey(win32con.VK_CONTROL, ord("V"))
+    time.sleep(0.3)
 
 
 def open_contact(ctrl: auto.Control, contact: str, min_width: int, min_height: int) -> None:
     activate(ctrl, min_width, min_height)
-    auto.SendKeys("{Ctrl}f", waitTime=0.05)
+    press_hotkey(win32con.VK_CONTROL, ord("F"))
     time.sleep(0.2)
     paste_text(contact)
     time.sleep(0.6)
-    auto.SendKeys("{Enter}", waitTime=0.05)
+    press_key(win32con.VK_RETURN)
     time.sleep(0.8)
 
 
@@ -440,7 +492,7 @@ def send_text(
     editor_text = ""
     if verify_editor:
         editor_text = verify_editor_draft(ctrl, message, editor_verify_timeout)
-    auto.SendKeys("{Enter}", waitTime=0.05)
+    press_key(win32con.VK_RETURN)
     logging.info("submitted text via UI automation contact=%r length=%d", contact or "<current>", len(message))
     return editor_text
 
@@ -459,8 +511,8 @@ def verify_editor_draft(ctrl: auto.Control, expected: str, timeout: float) -> st
             last_error = str(exc)
         time.sleep(0.3)
     with contextlib.suppress(Exception):
-        auto.SendKeys("{Ctrl}a", waitTime=0.05)
-        auto.SendKeys("{Back}", waitTime=0.05)
+        press_hotkey(win32con.VK_CONTROL, ord("A"))
+        press_key(win32con.VK_BACK)
     raise RuntimeError(f"message draft did not reach the WeChat editor; Enter was not pressed: {last_error}")
 
 
@@ -640,9 +692,12 @@ def ocr_title_texts(ctrl: auto.Control) -> list[str]:
 
 def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
     ensure_no_blocking_windows(ctrl)
-    hwnd = int(ctrl.NativeWindowHandle or 0)
-    if hwnd and win32gui.GetForegroundWindow() != hwnd:
-        raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered chat area")
+    if not foreground_belongs_to_window(ctrl):
+        foreground = foreground_window_info()
+        raise RuntimeError(
+            "WeChat window is not foreground; refusing to OCR a possibly covered chat area: "
+            f"foreground={foreground.name!r} [{foreground.class_name}] {foreground.rect}"
+        )
     left, top, right, bottom = screenshot_rect(ctrl)
     width = right - left
     height = bottom - top
@@ -658,9 +713,12 @@ def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
 
 def ocr_editor_texts(ctrl: auto.Control) -> list[str]:
     ensure_no_blocking_windows(ctrl)
-    hwnd = int(ctrl.NativeWindowHandle or 0)
-    if hwnd and win32gui.GetForegroundWindow() != hwnd:
-        raise RuntimeError("WeChat window is not foreground; refusing to OCR a possibly covered editor area")
+    if not foreground_belongs_to_window(ctrl):
+        foreground = foreground_window_info()
+        raise RuntimeError(
+            "WeChat window is not foreground; refusing to OCR a possibly covered editor area: "
+            f"foreground={foreground.name!r} [{foreground.class_name}] {foreground.rect}"
+        )
     left, top, right, bottom = screenshot_rect(ctrl)
     width = right - left
     height = bottom - top
