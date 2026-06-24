@@ -4,6 +4,8 @@ param(
     [string]$Message = '',
     [int]$MinWindowWidth = 640,
     [int]$MinWindowHeight = 480,
+    [int]$VerifyTimeoutSeconds = 12,
+    [int]$EditorVerifyTimeoutSeconds = 5,
     [switch]$KeepFocus,
     [switch]$SkipReadiness
 )
@@ -26,6 +28,10 @@ function New-FileTransferAssistantText {
         [char]0x52a9,
         [char]0x624b
     )
+}
+
+function New-NaturalSmokeMessage {
+    return 'memo sync ' + (Get-Date -Format 'MMdd HHmm')
 }
 
 function Invoke-JsonCommand {
@@ -52,7 +58,7 @@ if ([string]::IsNullOrWhiteSpace($ExpectTitle)) {
     $ExpectTitle = New-FileTransferAssistantText
 }
 if ([string]::IsNullOrWhiteSpace($Message)) {
-    $Message = 'Codex gated real-chat smoke ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    $Message = New-NaturalSmokeMessage
 }
 
 $diagnoseCommand = @(
@@ -119,7 +125,11 @@ $sendCommand += @(
     $ExpectTitle,
     '--verify',
     '--verify-last',
-    '--verify-editor'
+    '--verify-editor',
+    '--verify-timeout',
+    "$VerifyTimeoutSeconds",
+    '--editor-verify-timeout',
+    "$EditorVerifyTimeoutSeconds"
 )
 
 $send = Invoke-JsonCommand $sendCommand

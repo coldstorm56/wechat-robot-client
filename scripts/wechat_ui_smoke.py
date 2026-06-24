@@ -477,6 +477,7 @@ def send_text(
     expected_title: str,
     verify_editor: bool,
     editor_verify_timeout: float,
+    paste_attempts: int,
     min_width: int,
     min_height: int,
 ) -> str:
@@ -486,12 +487,22 @@ def send_text(
         activate(ctrl, min_width, min_height)
     if expected_title:
         verify_conversation_title(ctrl, expected_title)
-    click_message_input(ctrl)
-    paste_text(message)
-    time.sleep(0.2)
     editor_text = ""
-    if verify_editor:
-        editor_text = verify_editor_draft(ctrl, message, editor_verify_timeout)
+    attempts = max(1, paste_attempts)
+    for attempt in range(attempts):
+        click_message_input(ctrl)
+        paste_text(message)
+        time.sleep(0.2)
+        if not verify_editor:
+            break
+        try:
+            editor_text = verify_editor_draft(ctrl, message, editor_verify_timeout)
+            break
+        except RuntimeError:
+            if attempt == attempts - 1:
+                raise
+            logging.info("message editor draft verification failed; retrying paste attempt %d/%d", attempt + 1, attempts)
+            time.sleep(0.3)
     press_key(win32con.VK_RETURN)
     logging.info("submitted text via UI automation contact=%r length=%d", contact or "<current>", len(message))
     return editor_text
@@ -703,7 +714,7 @@ def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
     height = bottom - top
     return ocr_rect_texts(
         (
-            left + int(width * 0.30),
+            left + int(width * 0.20),
             top + int(height * 0.11),
             right - int(width * 0.02),
             bottom - int(height * 0.28),
@@ -724,7 +735,7 @@ def ocr_editor_texts(ctrl: auto.Control) -> list[str]:
     height = bottom - top
     return ocr_rect_texts(
         (
-            left + int(width * 0.30),
+            left + int(width * 0.20),
             top + int(height * 0.72),
             right - int(width * 0.02),
             bottom - int(height * 0.02),
@@ -846,6 +857,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             args.expect_title,
             args.verify_editor,
             args.editor_verify_timeout,
+            args.paste_attempts,
             args.min_window_width,
             args.min_window_height,
         )
@@ -922,6 +934,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--verify-last", action=argparse.BooleanOptionalAction, default=True, help="require the current conversation's last readable message to match before returning ok")
     send.add_argument("--verify-editor", action=argparse.BooleanOptionalAction, default=True, help="require the draft to be visible in the message editor before pressing Enter")
     send.add_argument("--editor-verify-timeout", type=float, default=3)
+    send.add_argument("--paste-attempts", type=int, default=2, help="retry click/paste when the editor draft is not visible; Enter is still pressed only after draft verification")
     send.set_defaults(func=cmd_send)
 
     read_last = sub.add_parser("read-last", help="read the last visible text from a conversation")

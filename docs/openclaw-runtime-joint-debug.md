@@ -154,14 +154,14 @@ Send one explicit smoke message to the currently open conversation. For the File
 
 ```powershell
 python .\scripts\wechat_ui_smoke.py send `
-  --message 'wechat-ui-automation smoke test'
+  --message 'memo sync 0624 1435'
 ```
 
 Best-effort send without visible verification is available only for local debugging and must not be used as acceptance evidence:
 
 ```powershell
 python .\scripts\wechat_ui_smoke.py send `
-  --message 'wechat-ui-automation smoke test' `
+  --message 'memo sync 0624 1435' `
   --no-verify
 ```
 
@@ -175,7 +175,7 @@ python .\scripts\wechat_ui_smoke.py read-last --contact '文件传输助手'
 OCR notes:
 
 - The OCR verification is local-only and uses the visible WeChat window; it does not upload screenshots.
-- Use distinct ASCII smoke text for verification because OCR can normalize or drop spaces.
+- Use a distinct but normal-looking message for real WeChat verification, such as a short memo with a timestamp. Prefer simple ASCII memo text for OCR stability, and avoid visible automation terms like `Codex`, `automation`, or `smoke` in messages sent to the real account.
 - `read-last` returns the last OCR-readable visible text in the chat area, not a protocol message object.
 - On 2026-06-23, with File Transfer Assistant already open, `Codex visible OCR smoke 2026-06-23` returned `delivery_status=visible_verified`, and `read-last` returned the same text.
 - If a send attempt fails before Enter with `message draft did not reach the WeChat editor`, treat it as an input-focus failure. The current WeChat 4.x MMUI message editor does not expose a normal UIA edit control, so automated focus remains a known risk; the bridge must continue to fail closed instead of reporting success.
@@ -466,7 +466,7 @@ For the gated real WeChat File Transfer Assistant smoke, run this only after WeC
 .\scripts\wechat_ui_real_smoke.ps1
 ```
 
-This script first runs the read-only diagnostic. If `ready_for_real_send=false`, it exits without sending. If ready, it sends one timestamped `Codex gated real-chat smoke ...` message, requires visible delivery verification, then reads the current conversation's last visible text and requires it to match the sent message. Use `-Message` for a custom smoke string, `-MinWindowWidth`/`-MinWindowHeight` for a controlled resized-window threshold, and reserve `-SkipReadiness` for watched local debugging only.
+This script first runs the read-only diagnostic. If `ready_for_real_send=false`, it exits without sending. If ready, it sends one timestamped normal memo message, requires visible delivery verification, then reads the current conversation's last visible text and requires it to match the sent message. The Python send helper retries click/paste once when the editor draft is not visible, but still presses Enter only after draft OCR succeeds. Use `-Message` for a custom verification string, `-VerifyTimeoutSeconds`/`-EditorVerifyTimeoutSeconds` for slower OCR cycles, `-MinWindowWidth`/`-MinWindowHeight` for a controlled resized-window threshold, and reserve `-SkipReadiness` for watched local debugging only.
 
 For the full local main-service path without touching real WeChat, run:
 
