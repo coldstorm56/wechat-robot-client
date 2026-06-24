@@ -116,6 +116,25 @@ func TestNormalizeUIStatusReportsSmallWindow(t *testing.T) {
 	}
 }
 
+func TestNormalizeUIStatusReportsLoginWindow(t *testing.T) {
+	status := normalizeUIStatus(map[string]any{
+		"foreground":     true,
+		"title_match":    false,
+		"window_size_ok": false,
+		"window": map[string]any{
+			"name":       "微信",
+			"class_name": "mmui::LoginWindow",
+		},
+	})
+
+	if status["blocked"] != false || status["usable"] != false {
+		t.Fatalf("status=%#v", status)
+	}
+	if got := status["unusable_reason"]; got != "requires_login" {
+		t.Fatalf("unusable_reason=%#v", got)
+	}
+}
+
 func TestNormalizeUIStatusPreservesUnknownShape(t *testing.T) {
 	status := normalizeUIStatus("raw")
 
@@ -243,6 +262,30 @@ func TestReadinessHandlerReportsBlockedUI(t *testing.T) {
 	}
 }
 
+func TestReadinessHandlerReportsLoginRequired(t *testing.T) {
+	cfg := bridgeConfig{
+		Python:  writeUIStatusHelperCommand(t, loginUIStatusPayload()),
+		Script:  "ignored-script-arg",
+		Timeout: time.Second,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/Operator/Readiness", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+
+	readinessHandler(cfg, newPollRunner())(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	data := decodeClientDataMap(t, resp)
+	if data["ready"] != false || data["reason"] != "requires_login" {
+		t.Fatalf("Data=%#v", data)
+	}
+	uiStatus, ok := data["ui_status"].(map[string]any)
+	if !ok || uiStatus["usable"] != false || uiStatus["unusable_reason"] != "requires_login" {
+		t.Fatalf("ui_status=%#v", data["ui_status"])
+	}
+}
+
 func TestReadinessHandlerReportsReady(t *testing.T) {
 	cfg := bridgeConfig{
 		Python:  writeUIStatusHelperCommand(t, usableUIStatusPayload()),
@@ -282,6 +325,10 @@ func blockedUIStatusPayload() string {
 
 func usableUIStatusPayload() string {
 	return `{"ok":true,"status":{"foreground":true,"title_match":true,"blocking_windows":[]}}`
+}
+
+func loginUIStatusPayload() string {
+	return `{"ok":true,"status":{"foreground":true,"title_match":false,"window_size_ok":false,"window":{"name":"微信","class_name":"mmui::LoginWindow"},"blocking_windows":[]}}`
 }
 
 func blockingWindowErrorPayload() string {

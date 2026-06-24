@@ -1329,6 +1329,11 @@ func normalizeUIStatus(status any) map[string]any {
 		result[key] = value
 	}
 
+	if isLoginWindowStatus(statusMap) {
+		result["usable"] = false
+		result["unusable_reason"] = "requires_login"
+		return result
+	}
 	if blockers, ok := statusMap["blocking_windows"].([]any); ok && len(blockers) > 0 {
 		result["blocked"] = true
 		result["usable"] = false
@@ -1350,6 +1355,15 @@ func normalizeUIStatus(status any) map[string]any {
 		result["unusable_reason"] = "not_foreground"
 	}
 	return result
+}
+
+func isLoginWindowStatus(statusMap map[string]any) bool {
+	window, ok := statusMap["window"].(map[string]any)
+	if !ok {
+		return false
+	}
+	className, _ := window["class_name"].(string)
+	return strings.Contains(strings.ToLower(className), "login")
 }
 
 func allowAutomationNow(w http.ResponseWriter, cfg bridgeConfig) bool {
