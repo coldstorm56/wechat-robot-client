@@ -54,6 +54,7 @@
 - Runtime fix: widen WeChat UI OCR chat/editor regions for fullscreen windows so left-aligned drafts and incoming bubbles are not cropped during verification.
 - Runtime validation: lengthen gated real WeChat visible-delivery OCR waits while keeping last-visible-message matching as the final send proof.
 - Runtime safety: retry WeChat UI click/paste once when editor draft OCR fails, while still refusing to press Enter until the expected draft is visible.
+- Runtime validation: increase full assistant-flow E2E main-service startup waits to tolerate slow local MySQL auto-migration during acceptance.
 - Runtime fix: include the `messages` table in startup auto-migration so fresh OpenClaw assistant databases can process WeChat callbacks and reach assistant plugins.
 - Runtime validation: pass the local temporary-main-service assistant-flow E2E check from `sync-message` through mock OpenClaw to mock `/Msg/SendTxt` with reversible local DB preparation.
 - Runtime safety: tighten WeChat UI send verification so a successful send must also match the current conversation's last readable message.

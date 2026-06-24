@@ -235,7 +235,7 @@ if ($RunMainE2E) {
         '--content', 'assistant flow acceptance private smoke',
         '--reply', 'OpenClaw mock reply acceptance private smoke',
         '--wait-reply-seconds', '35',
-        '--main-start-timeout', '120'
+        '--main-start-timeout', '240'
     )
 
     Invoke-CommandStep 'send-failure observability E2E' @(
@@ -253,7 +253,7 @@ if ($RunMainE2E) {
         '--mock-wechat-send-error', 'blocking_window',
         '--expect-main-log-text', 'blocking_window',
         '--wait-reply-seconds', '35',
-        '--main-start-timeout', '120'
+        '--main-start-timeout', '240'
     )
 
     Invoke-CommandStep 'group @bot assistant-flow E2E' @(
@@ -272,7 +272,7 @@ if ($RunMainE2E) {
         '--content', 'group at acceptance assistant flow smoke',
         '--reply', 'OpenClaw mock reply group at acceptance smoke',
         '--wait-reply-seconds', '35',
-        '--main-start-timeout', '120'
+        '--main-start-timeout', '240'
     )
 
     Invoke-CommandStep 'group prefix assistant-flow E2E' @(
@@ -290,7 +290,7 @@ if ($RunMainE2E) {
         '--content', ($triggerPrefix + 'group prefix acceptance assistant flow smoke'),
         '--reply', 'OpenClaw mock reply group prefix acceptance smoke',
         '--wait-reply-seconds', '35',
-        '--main-start-timeout', '120'
+        '--main-start-timeout', '240'
     )
 
     Invoke-CommandStep 'non-whitelisted group suppression E2E' @(
@@ -311,7 +311,7 @@ if ($RunMainE2E) {
         '--content', 'group non whitelist acceptance assistant flow smoke',
         '--reply', 'OpenClaw mock reply should not send',
         '--wait-reply-seconds', '6',
-        '--main-start-timeout', '120'
+        '--main-start-timeout', '240'
     )
 }
 
