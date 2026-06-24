@@ -612,14 +612,30 @@ def ocr_title_texts(ctrl: auto.Control) -> list[str]:
     left, top, right, bottom = screenshot_rect(ctrl)
     width = right - left
     height = bottom - top
-    return ocr_rect_texts(
+    title_regions = [
         (
             left + int(width * 0.30),
             top + int(height * 0.02),
             left + int(width * 0.72),
             top + int(height * 0.10),
-        )
-    )
+        ),
+        (
+            left + int(width * 0.20),
+            top + int(height * 0.02),
+            right - int(width * 0.02),
+            top + int(height * 0.16),
+        ),
+    ]
+    texts: list[str] = []
+    seen: set[str] = set()
+    for region in title_regions:
+        with contextlib.suppress(Exception):
+            for text in ocr_rect_texts(region):
+                normalized = text.strip()
+                if normalized and normalized not in seen:
+                    texts.append(normalized)
+                    seen.add(normalized)
+    return texts
 
 
 def ocr_chat_texts(ctrl: auto.Control) -> list[str]:
