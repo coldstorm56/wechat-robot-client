@@ -2178,6 +2178,9 @@ func (s *MessageService) SetMessageIsInContext(message *model.Message) error {
 }
 
 func (s *MessageService) GetFriendAIMessageContext(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	if vars.OpenClawSettings.Enabled {
+		return s.GetFriendAIMessageContextByWindow(message)
+	}
 	messages, err := s.msgRepo.GetFriendAIMessageContext(message)
 	if err != nil {
 		return nil, err
@@ -2190,11 +2193,27 @@ func (s *MessageService) GetFriendAIMessageContext(message *model.Message) ([]op
 	return s.ProcessAIMessageContext(messages), nil
 }
 
+func (s *MessageService) GetFriendAIMessageContextByWindow(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	if !vars.OpenClawSettings.EnableContext {
+		return s.ProcessAIMessageContext([]*model.Message{message}), nil
+	}
+	limit := vars.OpenClawSettings.ContextWindow - 1
+	messages, err := s.msgRepo.GetFriendAIMessageContextByLimit(message, limit)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, message)
+	return s.ProcessAIMessageContext(messages), nil
+}
+
 func (s *MessageService) ResetFriendAIMessageContext(message *model.Message) error {
 	return s.msgRepo.ResetFriendAIMessageContext(message)
 }
 
 func (s *MessageService) GetChatRoomAIMessageContext(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	if vars.OpenClawSettings.Enabled {
+		return s.GetChatRoomAIMessageContextByWindow(message)
+	}
 	messages, err := s.msgRepo.GetChatRoomAIMessageContext(message)
 	if err != nil {
 		return nil, err
@@ -2204,6 +2223,19 @@ func (s *MessageService) GetChatRoomAIMessageContext(message *model.Message) ([]
 	}) {
 		messages = append(messages, message)
 	}
+	return s.ProcessAIMessageContext(messages), nil
+}
+
+func (s *MessageService) GetChatRoomAIMessageContextByWindow(message *model.Message) ([]openai.ChatCompletionMessageParamUnion, error) {
+	if !vars.OpenClawSettings.EnableContext {
+		return s.ProcessAIMessageContext([]*model.Message{message}), nil
+	}
+	limit := vars.OpenClawSettings.ContextWindow - 1
+	messages, err := s.msgRepo.GetChatRoomAIMessageContextByLimit(message, limit)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, message)
 	return s.ProcessAIMessageContext(messages), nil
 }
 

@@ -2,7 +2,13 @@ package plugins
 
 import (
 	"log"
+	"regexp"
+	"strings"
 	"wechat-robot-client/interface/plugin"
+	"wechat-robot-client/model"
+	"wechat-robot-client/pkg/robot"
+	"wechat-robot-client/service"
+	"wechat-robot-client/vars"
 )
 
 type ChatRoomAIChatPlugin struct{}
@@ -35,8 +41,8 @@ func (p *ChatRoomAIChatPlugin) Run(ctx *plugin.MessageContext) {
 	if !p.PreAction(ctx) {
 		return
 	}
-	isAIEnabled := ctx.Settings.IsAIChatEnabled()
-	isAITrigger := ctx.Settings.IsAITrigger()
+	isAIEnabled := p.isAIEnabled(ctx)
+	isAITrigger := p.isAITrigger(ctx)
 	if isAIEnabled {
 		if isAITrigger {
 			defer func() {
@@ -52,5 +58,56 @@ func (p *ChatRoomAIChatPlugin) Run(ctx *plugin.MessageContext) {
 			aiChat.Run(ctx)
 			return
 		}
+	}
+}
+
+func (p *ChatRoomAIChatPlugin) isAIEnabled(ctx *plugin.MessageContext) bool {
+	if !vars.OpenClawSettings.Enabled {
+		return ctx.Settings.IsAIChatEnabled()
+	}
+	chatRoomSettings, err := service.NewChatRoomSettingsService(ctx.Context).GetChatRoomSettings(ctx.Message.FromWxID)
+	if err != nil {
+		log.Printf("[OpenClaw] 获取群聊白名单设置失败: %v", err)
+		return false
+	}
+	return chatRoomSettings != nil && chatRoomSettings.ChatAIEnabled != nil && *chatRoomSettings.ChatAIEnabled
+}
+
+func (p *ChatRoomAIChatPlugin) isAITrigger(ctx *plugin.MessageContext) bool {
+	if !vars.OpenClawSettings.Enabled {
+		return ctx.Settings.IsAITrigger()
+	}
+
+	messageContent := ctx.Message.Content
+	if ctx.Message.AppMsgType == model.AppMsgTypequote {
+		var xmlMessage robot.XmlMessage
+		if err := vars.RobotRuntime.XmlDecoder(messageContent, &xmlMessage); err == nil {
+			messageContent = xmlMessage.AppMsg.Title
+		}
+	}
+
+	if ctx.Message.IsAtMe {
+		atAllRegex := regexp.MustCompile(vars.AtAllRegexp)
+		if atAllRegex.MatchString(messageContent) {
+			return false
+		}
+	}
+
+	triggerPrefix := strings.TrimSpace(vars.OpenClawSettings.TriggerPrefix)
+	mode := strings.ToLower(strings.TrimSpace(vars.OpenClawSettings.TriggerMode))
+	hasPrefix := triggerPrefix != "" && strings.HasPrefix(strings.TrimSpace(messageContent), triggerPrefix)
+
+	switch mode {
+	case "always":
+		return true
+	case "at":
+		return ctx.Message.IsAtMe
+	case "prefix":
+		return hasPrefix
+	case "at_or_prefix", "":
+		return ctx.Message.IsAtMe || hasPrefix
+	default:
+		log.Printf("[OpenClaw] 未知 TRIGGER_MODE=%q，按 at_or_prefix 处理", vars.OpenClawSettings.TriggerMode)
+		return ctx.Message.IsAtMe || hasPrefix
 	}
 }

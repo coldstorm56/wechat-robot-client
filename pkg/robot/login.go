@@ -11,8 +11,11 @@ type GetQRCode struct {
 	Uuid         string `json:"Uuid"`
 	QRCodeURL    string `json:"QRCodeURL"`
 	QRCodeBase64 string `json:"QRCodeBase64"`
+	QrURL        string `json:"QrUrl"`
+	QrBase64     string `json:"QrBase64"`
 	Data62       string `json:"Data62"`
 	ExpiredTime  string `json:"ExpiredTime"`
+	DeviceID     string `json:"DeviceId"`
 }
 
 type AwakenLoginRequest struct {
@@ -50,10 +53,14 @@ type CheckUuid struct {
 }
 
 type LoginResponse struct {
-	Uuid       string `json:"uuid"`
-	Data62     string `json:"data62"`
-	AwkenLogin bool   `json:"awken_login"`
-	AutoLogin  bool   `json:"auto_login"`
+	Uuid         string `json:"uuid"`
+	Data62       string `json:"data62"`
+	QRCodeURL    string `json:"qrcode_url,omitempty"`
+	QRCodeBase64 string `json:"qrcode_base64,omitempty"`
+	ExpiredTime  string `json:"expired_time,omitempty"`
+	DeviceID     string `json:"device_id,omitempty"`
+	AwkenLogin   bool   `json:"awken_login"`
+	AutoLogin    bool   `json:"auto_login"`
 }
 
 type VerificationCodeRequest struct {

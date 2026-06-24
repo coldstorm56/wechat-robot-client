@@ -117,6 +117,24 @@ func (m *Message) GetFriendAIMessageContext(message *model.Message) ([]*model.Me
 	return messages, nil
 }
 
+func (m *Message) GetFriendAIMessageContextByLimit(message *model.Message, limit int) ([]*model.Message, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var messages []*model.Message
+	err := m.DB.WithContext(m.Ctx).Where("id < ?", message.ID).
+		Where("from_wxid = ?", message.FromWxID).
+		Where("`type` in (1, 3) OR (`type` = 49 AND `app_msg_type` = 57)").
+		Order("id DESC").
+		Limit(limit).
+		Find(&messages).Error
+	if err != nil {
+		return nil, err
+	}
+	reverseMessages(messages)
+	return messages, nil
+}
+
 func (m *Message) ResetFriendAIMessageContext(message *model.Message) error {
 	tenMinutesAgo := time.Now().Add(-10 * time.Minute).Unix()
 	return m.DB.WithContext(m.Ctx).Model(&model.Message{}).
@@ -139,6 +157,25 @@ func (m *Message) GetChatRoomAIMessageContext(message *model.Message) ([]*model.
 	if err != nil {
 		return nil, err
 	}
+	return messages, nil
+}
+
+func (m *Message) GetChatRoomAIMessageContextByLimit(message *model.Message, limit int) ([]*model.Message, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var messages []*model.Message
+	err := m.DB.WithContext(m.Ctx).Where("id < ?", message.ID).
+		Where("from_wxid = ?", message.FromWxID).
+		Where("(sender_wxid = ? AND is_ai_context = 1) OR reply_wxid = ?", message.SenderWxID, message.SenderWxID).
+		Where("`type` in (1, 3) OR (`type` = 49 AND `app_msg_type` = 57)").
+		Order("id DESC").
+		Limit(limit).
+		Find(&messages).Error
+	if err != nil {
+		return nil, err
+	}
+	reverseMessages(messages)
 	return messages, nil
 }
 
@@ -393,6 +430,12 @@ func (m *Message) GetRecentTextMessages(sinceID int64, limit int) ([]*model.Mess
 		Limit(limit).
 		Find(&messages).Error
 	return messages, err
+}
+
+func reverseMessages(messages []*model.Message) {
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
 }
 
 func (m *Message) GetFriendTextMessagesInIDRange(contactWxID string, startMsgID, endMsgID int64, limit int) ([]*model.Message, error) {

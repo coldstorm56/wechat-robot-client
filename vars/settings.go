@@ -1,5 +1,7 @@
 package vars
 
+import "time"
+
 type MysqlSettingS struct {
 	Driver          string // 使用的数据库驱动，支持 mysql、postgres
 	Host            string
@@ -34,7 +36,21 @@ type RabbitmqSettingS struct {
 	Vhost    string
 }
 
+type OpenClawSettingS struct {
+	Enabled        bool
+	BaseURL        string
+	APIKey         string
+	Timeout        time.Duration
+	BotName        string
+	TriggerMode    string
+	TriggerPrefix  string
+	EnableContext  bool
+	ContextWindow  int
+	MaxReplyLength int
+}
+
 var MysqlSettings = &MysqlSettingS{}
 var RedisSettings = &RedisSettingS{}
 var QdrantSettings = &QdrantSettingS{}
 var RabbitmqSettings = &RabbitmqSettingS{}
+var OpenClawSettings = &OpenClawSettingS{}

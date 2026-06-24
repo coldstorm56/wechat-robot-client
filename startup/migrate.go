@@ -31,6 +31,7 @@ func autoMigrateTasks() []migrateTask {
 				&model.KnowledgeDocument{},
 				&model.ImageKnowledgeDocument{},
 				&model.KnowledgeCategory{},
+				&model.Message{},
 				&model.Memory{},
 				&model.MemoryExtractionState{},
 				&model.MemberProfile{},
@@ -40,6 +41,17 @@ func autoMigrateTasks() []migrateTask {
 				&model.Skill{},
 				&model.SystemPrompt{},
 				&model.Contact{},
+				&model.AssistantSessionLog{},
+				&model.MCPServer{},
+			},
+		},
+		{
+			name: "robot_admin",
+			db: func() *gorm.DB {
+				return vars.AdminDB
+			},
+			models: []any{
+				&model.RobotAdmin{},
 			},
 		},
 	}
